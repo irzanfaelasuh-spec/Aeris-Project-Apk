@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="aeris_black">#05070A</color>
+    <color name="aeris_surface">#11151B</color>
+    <color name="aeris_cyan">#62DDF3</color>
+    <color name="aeris_white">#F4F7FA</color>
+</resources>
