@@ -13,7 +13,7 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowManager
 import android.content.Context
-import android.app.ServiceInfo
+import android.content.pm.ServiceInfo
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import dev.aeris.island.AerisApp

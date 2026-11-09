@@ -110,7 +110,7 @@ class PillOverlayView(context: Context, private val callbacks: Callbacks) : Line
         replyInput.setHintTextColor(0xFF7F8996.toInt())
         replyInput.setTextColor(Color.WHITE)
         replyInput.textSize = 12f
-        replyInput.singleLine = true
+        replyInput.setSingleLine(true)
         replyInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
         replyInput.background = roundedBackground(0xFF1A2029.toInt(), dp(13).toFloat())
         replyInput.setPadding(dp(10), dp(8), dp(10), dp(8))
@@ -304,8 +304,8 @@ private class VisualizerStrip(context: Context) : View(context) {
         val count = 6
         val gap = width.toFloat() / (count + 1)
         for (i in 0 until count) {
-            val wave = if (isActive) kotlin.math.abs(kotlin.math.sin(phase + i * 0.72f)) else 0.18
-            val h = (height * (0.22 + wave * 0.55)).toFloat()
+            val wave = if (isActive) kotlin.math.abs(kotlin.math.sin(phase + i * 0.72f)) else 0.18f
+            val h = height * (0.22f + wave * 0.55f)
             val x = gap * (i + 1)
             canvas.drawLine(x, (height - h) / 2f, x, (height + h) / 2f, paint)
         }
