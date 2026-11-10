@@ -266,7 +266,7 @@ private fun SplashScreen() {
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 4.sp,
                 color = AerisCyan.copy(alpha = versionAlpha),
-                import androidx.compose.foundation.layout.offset
+                modifier = Modifier.offset(y = versionOffset.dp).alpha(versionAlpha)
             )
         }
         Text("ANDROID DYNAMIC EXPERIENCE", fontSize = 9.sp, letterSpacing = 1.9.sp, color = AerisMuted)
