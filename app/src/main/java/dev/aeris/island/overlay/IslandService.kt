@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowManager
@@ -24,6 +25,7 @@ import dev.aeris.island.media.MediaBridge
 import dev.aeris.island.media.MediaSnapshot
 import dev.aeris.island.notifications.NotificationSnapshot
 import dev.aeris.island.notifications.NotificationStore
+import dev.aeris.island.notifications.AerisNotificationListener
 
 class IslandService : Service(), PillOverlayView.Callbacks {
     private val handler = Handler(Looper.getMainLooper())
@@ -31,9 +33,10 @@ class IslandService : Service(), PillOverlayView.Callbacks {
     private var islandView: PillOverlayView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
     private var lastMediaKey = ""
-    private var lastNotificationTime = 0L
+    private var lastNotificationSignature = ""
     private var expandedUntil = 0L
     private var focusForReply = false
+    private var introAnimationUntil = 0L
 
     private val refreshTask = object : Runnable {
         override fun run() {
@@ -105,9 +108,16 @@ class IslandService : Service(), PillOverlayView.Callbacks {
         val view = PillOverlayView(this, this)
         val params = buildLayoutParams()
         try {
+            view.alpha = 0f
+            view.translationY = -dp(7).toFloat()
+            view.scaleX = 0.97f
+            view.scaleY = 0.97f
             windowManager.addView(view, params)
             islandView = view
             layoutParams = params
+            introAnimationUntil = SystemClock.uptimeMillis() + 360L
+            view.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)
+                .setDuration(360L).setInterpolator(android.view.animation.DecelerateInterpolator()).start()
         } catch (_: Exception) {
             islandView = null
             layoutParams = null
@@ -158,9 +168,10 @@ class IslandService : Service(), PillOverlayView.Callbacks {
         }
         lastMediaKey = mediaKey
 
-        if (notification != null && notification.receivedAt != lastNotificationTime &&
+        val notificationSignature = notification?.let { "${it.key}|${it.receivedAt}" }.orEmpty()
+        if (notificationSignature.isNotBlank() && notificationSignature != lastNotificationSignature &&
             AerisPrefs.bool(this, "auto_expand_notifications", true)) {
-            lastNotificationTime = notification.receivedAt
+            lastNotificationSignature = notificationSignature
             requestTimedExpansion()
         }
 
@@ -173,7 +184,9 @@ class IslandService : Service(), PillOverlayView.Callbacks {
         }
         val idle = media == null && notification == null
         val baseOpacity = AerisPrefs.int(this, "island_opacity", 100).coerceIn(60, 100) / 100f
-        view.alpha = if (idle && AerisPrefs.bool(this, "fade_when_idle", false)) minOf(baseOpacity, 0.72f) else baseOpacity
+        if (SystemClock.uptimeMillis() >= introAnimationUntil) {
+            view.alpha = if (idle && AerisPrefs.bool(this, "fade_when_idle", false)) minOf(baseOpacity, 0.72f) else baseOpacity
+        }
         val showExpanded = focusForReply || System.currentTimeMillis() < expandedUntil
         view.updateContent(
             media = media,
@@ -188,9 +201,11 @@ class IslandService : Service(), PillOverlayView.Callbacks {
             showTrackState = AerisPrefs.bool(this, "show_track_state", true),
             showSourceApp = AerisPrefs.bool(this, "show_source_app", false),
             cornerRadius = AerisPrefs.int(this, "corner_radius", 40),
-            visualizerSpeed = AerisPrefs.int(this, "animation_speed", 100)
+            visualizerSpeed = AerisPrefs.int(this, "animation_speed", 100),
+            showLyrics = AerisPrefs.bool(this, "lyrics_enabled", true),
+            notificationCount = NotificationStore.count()
         )
-        updateLayoutForCurrentMode(showExpanded)
+        updateLayoutForCurrentMode(showExpanded, media, notification)
     }
 
     private fun requestTimedExpansion() {
@@ -202,18 +217,24 @@ class IslandService : Service(), PillOverlayView.Callbacks {
         expandedUntil = System.currentTimeMillis() + seconds * 1000L
     }
 
-    private fun updateLayoutForCurrentMode(expanded: Boolean) {
+    private fun updateLayoutForCurrentMode(expanded: Boolean, media: MediaSnapshot?, notification: NotificationSnapshot?) {
         val view = islandView ?: return
         val current = layoutParams ?: return
-        val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val screenWidthDp = (resources.displayMetrics.widthPixels / resources.displayMetrics.density).toInt()
         val maxWidthDp = (screenWidthDp - 20).coerceAtLeast(140)
         val requestedWidth = if (expanded) AerisPrefs.int(this, "expanded_width", 330)
             else AerisPrefs.int(this, "island_width", 188)
         val width = minOf(requestedWidth, maxWidthDp)
-        val height = if (expanded) 122 else AerisPrefs.int(this, "island_height", 43)
+        val height = if (expanded) {
+            when {
+                media != null && notification != null -> 262
+                media != null -> 222
+                notification != null -> 156
+                else -> 104
+            }
+        } else AerisPrefs.int(this, "island_height", 43)
         val newWidth = dp(width.coerceAtLeast(140))
-        val resolvedHeight = if (focusForReply) 166 else height
+        val resolvedHeight = if (focusForReply) 282 else height
         val newHeight = dp(resolvedHeight)
         if (current.width != newWidth || current.height != newHeight) {
             current.width = newWidth
@@ -228,11 +249,16 @@ class IslandService : Service(), PillOverlayView.Callbacks {
         params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
         try {
             islandView?.let {
-                params.height = dp(166)
+                params.height = dp(282)
                 windowManager.updateViewLayout(it, params)
                 it.showReplyEditor()
             }
         } catch (_: Exception) { }
+    }
+
+    override fun onDismissNotification() {
+        val key = NotificationStore.latest?.key ?: return
+        if (AerisNotificationListener.dismissNotification(key)) NotificationStore.remove(key)
     }
 
     override fun onReplyFinished() {
