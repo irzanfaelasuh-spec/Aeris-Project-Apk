@@ -170,7 +170,7 @@ class PillOverlayView(context: Context, private val callbacks: Callbacks) : Line
         controls.setPadding(dp(2), dp(4), dp(2), dp(2))
         controlsViewport.isHorizontalScrollBarEnabled = false
         controlsViewport.overScrollMode = View.OVER_SCROLL_NEVER
-        controlsViewport.fillViewport = true
+        controlsViewport.setFillViewport(true)
         controlsViewport.visibility = GONE
         controlsViewport.addView(controls, ViewGroup.LayoutParams(LayoutParams.WRAP_CONTENT, dp(40)))
         addView(controlsViewport, LayoutParams(LayoutParams.MATCH_PARENT, dp(43)))
