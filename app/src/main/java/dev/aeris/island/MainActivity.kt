@@ -25,6 +25,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -103,6 +104,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.offset
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -117,6 +119,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import dev.aeris.island.media.MediaBridge
 import dev.aeris.island.media.MediaSnapshot
+import dev.aeris.island.media.LyricsEngine
 import dev.aeris.island.notifications.AerisNotificationListener
 import dev.aeris.island.notifications.NotificationSnapshot
 import dev.aeris.island.notifications.NotificationStore
@@ -211,14 +214,29 @@ private fun SplashScreen() {
     val rotation by transition.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(5200, easing = FastOutSlowInEasing)),
+        animationSpec = infiniteRepeatable(tween(5600, easing = FastOutSlowInEasing)),
         label = "ring"
     )
     val pulse by transition.animateFloat(
-        initialValue = 0.92f,
-        targetValue = 1.04f,
-        animationSpec = infiniteRepeatable(tween(1600), RepeatMode.Reverse),
+        initialValue = 0.96f,
+        targetValue = 1.035f,
+        animationSpec = infiniteRepeatable(tween(1900), RepeatMode.Reverse),
         label = "pulse"
+    )
+    var showVersion by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(260)
+        showVersion = true
+    }
+    val versionOffset by animateFloatAsState(
+        targetValue = if (showVersion) 0f else -24f,
+        animationSpec = tween(820, easing = FastOutSlowInEasing),
+        label = "v2-drop"
+    )
+    val versionAlpha by animateFloatAsState(
+        targetValue = if (showVersion) 1f else 0f,
+        animationSpec = tween(640),
+        label = "v2-fade"
     )
     Column(
         Modifier.fillMaxSize().background(AerisBg),
@@ -227,25 +245,34 @@ private fun SplashScreen() {
     ) {
         Box(Modifier.size(150.dp), contentAlignment = Alignment.Center) {
             Canvas(Modifier.fillMaxSize()) {
-                drawCircle(AerisCyan.copy(alpha = 0.08f), radius = size.minDimension * 0.46f)
+                drawCircle(AerisCyan.copy(alpha = 0.075f), radius = size.minDimension * 0.46f)
                 drawCircle(AerisLine, radius = size.minDimension * 0.42f, style = Stroke(1.dp.toPx()))
                 drawArc(
                     brush = Brush.sweepGradient(listOf(Color.Transparent, AerisCyan, Color.Transparent)),
                     startAngle = rotation,
-                    sweepAngle = 110f,
+                    sweepAngle = 112f,
                     useCenter = false,
                     style = Stroke(width = 2.dp.toPx())
                 )
             }
             AerisMark(Modifier.size(66.dp).scale(pulse))
         }
-        Spacer(Modifier.height(26.dp))
+        Spacer(Modifier.height(22.dp))
         Text("AERIS", fontSize = 28.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 7.sp, color = AerisText)
-        Spacer(Modifier.height(8.dp))
-        Text("SYSTEM INTERFACE  /  01", fontSize = 10.sp, letterSpacing = 2.sp, color = AerisMuted)
-        Spacer(Modifier.height(54.dp))
+        Box(Modifier.fillMaxWidth().height(28.dp), contentAlignment = Alignment.Center) {
+            Text(
+                "V2",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 4.sp,
+                color = AerisCyan.copy(alpha = versionAlpha),
+                modifier = Modifier.offset(y = versionOffset.dp).alpha(versionAlpha)
+            )
+        }
+        Text("ANDROID DYNAMIC EXPERIENCE", fontSize = 9.sp, letterSpacing = 1.9.sp, color = AerisMuted)
+        Spacer(Modifier.height(48.dp))
         Box(Modifier.width(154.dp).height(2.dp).clip(CircleShape).background(AerisLine)) {
-            Box(Modifier.fillMaxWidth(0.46f).height(2.dp).clip(CircleShape).background(AerisCyan))
+            Box(Modifier.fillMaxWidth(0.5f).height(2.dp).clip(CircleShape).background(AerisCyan))
         }
         Spacer(Modifier.height(12.dp))
         Text("INITIALIZING EXPERIENCE", fontSize = 9.sp, letterSpacing = 1.7.sp, color = AerisMuted)
@@ -640,40 +667,95 @@ private fun MusicScreen() {
     val context = LocalContext.current
     var media by remember { mutableStateOf(MediaBridge.current(context)) }
     var listenerEnabled by remember { mutableStateOf(AerisNotificationListener.isEnabled(context)) }
+    var seekValue by remember { mutableFloatStateOf(0f) }
+    var isDragging by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         while (true) {
             media = MediaBridge.current(context)
             listenerEnabled = AerisNotificationListener.isEnabled(context)
-            delay(1000)
+            if (!isDragging) {
+                val duration = media?.durationMs ?: 0L
+                seekValue = if (duration > 0L) (media!!.positionMs.toFloat() / duration).coerceIn(0f, 1f) else 0f
+            }
+            delay(700)
         }
     }
+    val lyricLines = remember(media?.lyrics, media?.title) { LyricsEngine.parse(media?.lyrics) }
+    val lyricFrame = LyricsEngine.frame(lyricLines, media?.positionMs ?: 0L)
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
-        Text("LIVE MEDIA SESSION", color = AerisCyan, fontSize = 9.sp, letterSpacing = 1.8.sp)
+        Text("AERIS MUSIC ISLAND  /  V2", color = AerisCyan, fontSize = 9.sp, letterSpacing = 1.8.sp)
         Spacer(Modifier.height(13.dp))
-        Surface(color = AerisSurface, shape = RoundedCornerShape(22.dp), border = androidx.compose.foundation.BorderStroke(1.dp, AerisLine), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(Modifier.size(148.dp).clip(RoundedCornerShape(23.dp)).background(AerisSurface2), contentAlignment = Alignment.Center) {
+        Surface(color = AerisSurface, shape = RoundedCornerShape(26.dp), border = androidx.compose.foundation.BorderStroke(1.dp, AerisLine), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(17.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(Modifier.size(152.dp).clip(RoundedCornerShape(22.dp)).background(AerisSurface2), contentAlignment = Alignment.Center) {
                     if (media?.artwork != null) Image(media!!.artwork!!.asImageBitmap(), null, modifier = Modifier.fillMaxSize())
                     else AerisMark(Modifier.size(55.dp))
                 }
-                Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(15.dp))
                 Text(media?.title ?: "No active music", color = AerisText, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.height(5.dp))
+                Spacer(Modifier.height(4.dp))
                 Text(media?.artist ?: if (listenerEnabled) "Start music in Spotify or another player" else "Enable notification access below", color = AerisMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.height(18.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                    CircleAction("PREV") { MediaBridge.previous(context) }
-                    Spacer(Modifier.width(20.dp))
-                    CircleAction(if (media?.playing == true) "PAUSE" else "PLAY", primary = true) { MediaBridge.toggle(context) }
-                    Spacer(Modifier.width(20.dp))
-                    CircleAction("NEXT") { MediaBridge.next(context) }
+                Spacer(Modifier.height(15.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(formatTime(((media?.durationMs ?: 0L) * seekValue).toLong()), color = AerisText, fontSize = 10.sp)
+                    Text(formatTime(media?.durationMs ?: 0L), color = AerisMuted, fontSize = 10.sp)
                 }
-                Spacer(Modifier.height(13.dp))
-                Text(if (media?.playing == true) "PLAYING" else "IDLE", color = if (media?.playing == true) AerisGreen else AerisMuted, fontSize = 9.sp, letterSpacing = 1.5.sp)
+                Slider(
+                    value = seekValue,
+                    onValueChange = { isDragging = true; seekValue = it },
+                    onValueChangeFinished = {
+                        val duration = media?.durationMs ?: 0L
+                        if (duration > 0L) MediaBridge.seekTo(context, (duration * seekValue).toLong())
+                        isDragging = false
+                    },
+                    enabled = media?.canSeek == true && (media?.durationMs ?: 0L) > 0L,
+                    valueRange = 0f..1f
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                    CircleAction("−10", enabled = media?.canSeek == true) { MediaBridge.jumpBy(context, -10_000L) }
+                    CircleAction("PREV", enabled = media?.canPrevious == true) { MediaBridge.previous(context) }
+                    CircleAction(if (media?.playing == true) "PAUSE" else "PLAY", primary = true, enabled = media?.canToggle == true) { MediaBridge.toggle(context) }
+                    CircleAction("NEXT", enabled = media?.canNext == true) { MediaBridge.next(context) }
+                    CircleAction("+10", enabled = media?.canSeek == true) { MediaBridge.jumpBy(context, 10_000L) }
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    when {
+                        media == null -> "NO ACTIVE SESSION"
+                        media!!.playing -> "PLAYING  ·  ${media!!.packageName.substringAfterLast('.').uppercase(Locale.getDefault())}"
+                        else -> "PAUSED"
+                    },
+                    color = if (media?.playing == true) AerisGreen else AerisMuted,
+                    fontSize = 9.sp,
+                    letterSpacing = 1.5.sp
+                )
             }
         }
         Spacer(Modifier.height(13.dp))
-        InfoPanel("Lyrics", "Lyrics are displayed only when the music app exposes them through its media notification or session metadata. AERIS does not scrape or copy lyrics from other services.")
+        Surface(color = AerisSurface, shape = RoundedCornerShape(22.dp), border = androidx.compose.foundation.BorderStroke(1.dp, AerisLine), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("LIVE LYRICS", color = AerisCyan, fontSize = 9.sp, letterSpacing = 1.4.sp)
+                    Text(if (lyricFrame?.wordSynced == true) "WORD SYNC" else if (lyricFrame != null) "LINE SYNC" else "PLAYER SOURCE", color = AerisMuted, fontSize = 8.sp)
+                }
+                Spacer(Modifier.height(15.dp))
+                if (lyricFrame != null) {
+                    Text(lyricFrame.previous, color = AerisMuted.copy(alpha = 0.55f), fontSize = 12.sp, modifier = Modifier.fillMaxWidth(), maxLines = 1, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Spacer(Modifier.height(10.dp))
+                    Text(lyricFrame.current, color = AerisText, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, lineHeight = 26.sp, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Spacer(Modifier.height(10.dp))
+                    Text(lyricFrame.next, color = AerisMuted.copy(alpha = 0.55f), fontSize = 12.sp, modifier = Modifier.fillMaxWidth(), maxLines = 1, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                } else {
+                    if (!media?.lyrics.isNullOrBlank()) {
+                        Text(media!!.lyrics!!, color = AerisText, fontSize = 11.sp, lineHeight = 18.sp, maxLines = 8, overflow = TextOverflow.Ellipsis)
+                    } else {
+                        Text("Lyrics appear here when the active music app exposes lyric text through its Android media session. Enhanced LRC enables word-by-word timing; standard LRC follows each line. AERIS never invents lyric timing.", color = AerisMuted, fontSize = 11.sp, lineHeight = 17.sp)
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        InfoPanel("Playback compatibility", "Previous, Next and seeking are enabled only when the active player advertises those MediaSession actions. Lyrics are read locally from the player metadata; AERIS does not scrape protected lyrics from streaming services.")
         Spacer(Modifier.height(10.dp))
         if (!listenerEnabled) {
             Button(onClick = { safeOpen(context, Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = AerisCyan, contentColor = Color(0xFF001117))) {
@@ -684,9 +766,9 @@ private fun MusicScreen() {
 }
 
 @Composable
-private fun CircleAction(label: String, primary: Boolean = false, onClick: () -> Unit) {
+private fun CircleAction(label: String, primary: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
     Surface(
-        modifier = Modifier.size(if (primary) 58.dp else 44.dp).clip(CircleShape).clickable { onClick() },
+        modifier = Modifier.size(if (primary) 58.dp else 44.dp).clip(CircleShape).alpha(if (enabled) 1f else 0.35f).clickable(enabled = enabled) { onClick() },
         shape = CircleShape,
         color = if (primary) AerisCyan else AerisSurface2,
         border = androidx.compose.foundation.BorderStroke(1.dp, if (primary) AerisCyan else AerisLine)
@@ -701,12 +783,14 @@ private fun CircleAction(label: String, primary: Boolean = false, onClick: () ->
 private fun NotificationsScreen() {
     val context = LocalContext.current
     var notification by remember { mutableStateOf(NotificationStore.latest) }
+    var recentNotifications by remember { mutableStateOf(NotificationStore.recent()) }
     var listenerEnabled by remember { mutableStateOf(AerisNotificationListener.isEnabled(context)) }
     var replyText by rememberSaveable { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
         while (true) {
             notification = NotificationStore.latest
+            recentNotifications = NotificationStore.recent()
             listenerEnabled = AerisNotificationListener.isEnabled(context)
             delay(850)
         }
@@ -761,7 +845,27 @@ private fun NotificationsScreen() {
             }
         }
         Spacer(Modifier.height(15.dp))
-        InfoPanel("Privacy", "AERIS does not upload notification content. Notification previews are kept in memory for the current process; Android controls the permission and can revoke it at any time.")
+        if (recentNotifications.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("RECENT ACTIVITY", color = AerisCyan, fontSize = 9.sp, letterSpacing = 1.5.sp)
+                Text("${recentNotifications.size} / 8", color = AerisMuted, fontSize = 9.sp)
+            }
+            Spacer(Modifier.height(8.dp))
+            recentNotifications.forEach { item ->
+                Surface(color = AerisSurface, shape = RoundedCornerShape(14.dp), border = androidx.compose.foundation.BorderStroke(1.dp, AerisLine), modifier = Modifier.fillMaxWidth().padding(bottom = 7.dp)) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(item.packageName.substringAfterLast('.').uppercase(Locale.getDefault()), color = AerisCyan, fontSize = 8.sp, letterSpacing = 1.1.sp)
+                        Spacer(Modifier.height(4.dp))
+                        Text(if (AerisPrefs.bool(context, "hide_sensitive", false)) "Hidden by privacy setting" else item.title, color = AerisText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        if (!AerisPrefs.bool(context, "hide_sensitive", false) && item.text.isNotBlank()) {
+                            Spacer(Modifier.height(3.dp))
+                            Text(item.text, color = AerisMuted, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
+        InfoPanel("Privacy", "AERIS does not upload notification content. The recent queue is kept in memory only and clears when Android ends the app process. Android controls notification access and can revoke it at any time.")
     }
 }
 
@@ -842,7 +946,8 @@ private data class ToggleOption(val key: String, val title: String, val detail: 
 private val toggleOptions = listOf(
     ToggleOption("island_enabled", "Dynamic Island", "Master switch for the floating pill.", true),
     ToggleOption("music_enabled", "Music detection", "Read active Android media sessions.", true),
-    ToggleOption("media_controls", "Media controls", "Show previous, play/pause and next controls.", true),
+    ToggleOption("media_controls", "Media controls", "Show previous, play/pause, next and seek controls.", true),
+    ToggleOption("lyrics_enabled", "Lyrics in Music Island", "Show lyrics exposed by the active media player.", true),
     ToggleOption("show_artwork", "Album artwork", "Show cover art when the player supplies it.", true),
     ToggleOption("visualizer_enabled", "Visualizer bars", "Animate a small playback indicator while music plays.", true),
     ToggleOption("auto_expand_music", "Expand on new music", "Temporarily expand when a new track starts.", true),
@@ -1057,7 +1162,7 @@ private fun AboutScreen() {
             }
         }
         Spacer(Modifier.height(14.dp))
-        InfoPanel("Version", "AERIS 1.0.0  ·  Native Android project  ·  Minimum Android 8.0")
+        InfoPanel("Version", "AERIS 2.0.0  ·  Native Android project  ·  Minimum Android 8.0")
         Spacer(Modifier.height(9.dp))
         InfoPanel("Privacy", "Notification content and media metadata are handled locally. This project contains no analytics SDK, account system, ad SDK or remote notification relay.")
         Spacer(Modifier.height(9.dp))
@@ -1084,7 +1189,7 @@ private fun InfoPanel(title: String, detail: String) {
 private fun BootSequenceScreen(onFinish: () -> Unit) {
     val context = LocalContext.current
     val lines = listOf(
-        "AERIS BOOTLOADER  /  v1.0.0",
+        "AERIS BOOTLOADER  /  v2.0.0",
         "Mounting local configuration... OK",
         "Initializing overlay engine... OK",
         "Checking notification bridge... READY",
