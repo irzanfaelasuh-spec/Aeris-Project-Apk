@@ -40,6 +40,8 @@ object LyricsProvider {
                 try {
                     val lyrics = fetch(cleanTitle, cleanArtist, durationMs)
                     if (!lyrics.isNullOrBlank()) cache[key] = lyrics
+                } catch (_: Exception) {
+                    // A failed lookup must not crash the media service.
                 } finally {
                     inFlight.remove(key)
                 }
@@ -49,15 +51,13 @@ object LyricsProvider {
     }
 
     private fun fetch(title: String, artist: String, durationMs: Long): String? {
-        // First try the exact LRCLIB lookup, which can return syncedLyrics.
-        val exact = requestObject(
-            "$API_BASE/get?track_name=${encode(title)}" +
-                "&artist_name=${encode(artist)}" +
-                if (durationMs > 0L) "&duration=${durationMs / 1000.0}" else ""
-        )
-        lyricsFrom(exact)?.let { return it }
+        val durationSeconds = durationMs / 1000.0
+        val exactUrl = "$API_BASE/get?track_name=${encode(title)}" +
+            "&artist_name=${encode(artist)}" +
+            if (durationMs > 0L) "&duration=$durationSeconds" else ""
 
-        // Search fallback helps when the music app reports slightly different metadata.
+        lyricsFrom(requestObject(exactUrl))?.let { return it }
+
         val searchUrl = "$API_BASE/search?track_name=${encode(title)}&artist_name=${encode(artist)}"
         val results = requestArray(searchUrl) ?: return null
         val normalizedTitle = normalize(title)
@@ -66,29 +66,43 @@ object LyricsProvider {
         val candidates = (0 until results.length()).mapNotNull { index ->
             results.optJSONObject(index)
         }
-        val best = candidates.maxByOrNull { item ->
-            var score = 0
-            val candidateTitle = normalize(item.optString("trackName"))
-            val candidateArtist = normalize(item.optString("artistName"))
-            if (candidateTitle == normalizedTitle) score += 5
-            else if (candidateTitle.contains(normalizedTitle) || normalizedTitle.contains(candidateTitle)) score += 2
-            if (candidateArtist == normalizedArtist) score += 5
-            else if (candidateArtist.contains(normalizedArtist) || normalizedArtist.contains(candidateArtist)) score += 2
-            val candidateDuration = (item.optDouble("duration", 0.0) * 1000).toLong()
-            if (durationMs > 0 && candidateDuration > 0) {
-                val difference = kotlin.math.abs(candidateDuration - durationMs)
-                if (difference <= 5_000) score += 3
-                else if (difference <= 15_000) score += 1
+
+        val best = candidates
+            .filter { item ->
+                item.optString("trackName").isNotBlank() &&
+                    item.optString("artistName").isNotBlank() &&
+                    (!item.optString("syncedLyrics").isNullOrBlank() ||
+                        !item.optString("plainLyrics").isNullOrBlank())
             }
-            if (!item.optString("syncedLyrics").isNullOrBlank()) score += 2
-            score
-        }
+            .maxByOrNull { item ->
+                var score = 0
+                val candidateTitle = normalize(item.optString("trackName"))
+                val candidateArtist = normalize(item.optString("artistName"))
+
+                if (candidateTitle == normalizedTitle) score += 5
+                else if (candidateTitle.contains(normalizedTitle) ||
+                    normalizedTitle.contains(candidateTitle)) score += 2
+
+                if (candidateArtist == normalizedArtist) score += 5
+                else if (candidateArtist.contains(normalizedArtist) ||
+                    normalizedArtist.contains(candidateArtist)) score += 2
+
+                val candidateDuration = (item.optDouble("duration", 0.0) * 1000).toLong()
+                if (durationMs > 0L && candidateDuration > 0L) {
+                    val difference = kotlin.math.abs(candidateDuration - durationMs)
+                    if (difference <= 5_000L) score += 3
+                    else if (difference <= 15_000L) score += 1
+                }
+
+                if (!item.optString("syncedLyrics").isNullOrBlank()) score += 2
+                score
+            }
+
         return lyricsFrom(best)
     }
 
     private fun lyricsFrom(json: JSONObject?): String? {
         if (json == null) return null
-        // Prefer synchronized LRC; plain lyrics are a usable fallback.
         return json.optString("syncedLyrics").takeIf { it.isNotBlank() }
             ?: json.optString("plainLyrics").takeIf { it.isNotBlank() }
     }
@@ -131,11 +145,11 @@ object LyricsProvider {
 
     private fun normalize(value: String): String =
         value.lowercase(Locale.ROOT)
-            .replace(Regex("\\\\([^)]*\\\\)|\\\\[[^]]*\\\\]"), " ")
-            .replace(Regex("[^\\\\p{L}\\\\p{N}]"), " ")
-            .replace(Regex("\\\\s+"), " ")
+            .replace(Regex("\\([^)]*\\)|\\[[^]]*\\]"), " ")
+            .replace(Regex("[^\\p{L}\\p{N}]"), " ")
+            .replace(Regex("\\s+"), " ")
             .trim()
 
     private fun cacheKey(title: String, artist: String, durationMs: Long): String =
-        "${normalize(title)}|${normalize(artist)}|${durationMs / 5_000}"
+        "${normalize(title)}|${normalize(artist)}|${durationMs / 5_000L}"
 }
