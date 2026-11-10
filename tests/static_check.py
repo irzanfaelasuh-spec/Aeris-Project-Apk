@@ -17,8 +17,10 @@ REQUIRED = [
     "app/src/main/java/dev/aeris/island/overlay/IslandService.kt",
     "app/src/main/java/dev/aeris/island/overlay/PillOverlayView.kt",
     "app/src/main/java/dev/aeris/island/media/MediaBridge.kt",
+    "app/src/main/java/dev/aeris/island/media/LyricsEngine.kt",
     "app/src/main/java/dev/aeris/island/notifications/AerisNotificationListener.kt",
     "app/src/main/java/dev/aeris/island/shizuku/ShizukuBridge.kt",
+    "app/src/test/java/dev/aeris/island/media/LyricsEngineTest.kt",
     ".github/workflows/android.yml",
 ]
 missing = [item for item in REQUIRED if not (ROOT / item).is_file()]
@@ -52,15 +54,35 @@ for label, needle in checks.items():
 main = (ROOT / "app/src/main/java/dev/aeris/island/MainActivity.kt").read_text(encoding="utf-8")
 service = (ROOT / "app/src/main/java/dev/aeris/island/overlay/IslandService.kt").read_text(encoding="utf-8")
 notification = (ROOT / "app/src/main/java/dev/aeris/island/notifications/AerisNotificationListener.kt").read_text(encoding="utf-8")
+pill = (ROOT / "app/src/main/java/dev/aeris/island/overlay/PillOverlayView.kt").read_text(encoding="utf-8")
+media = (ROOT / "app/src/main/java/dev/aeris/island/media/MediaBridge.kt").read_text(encoding="utf-8")
+lyrics = (ROOT / "app/src/main/java/dev/aeris/island/media/LyricsEngine.kt").read_text(encoding="utf-8")
 for label, content, needles in [
     ("main UI", main, ["SplashScreen", "VerificationScreen", "HomeScreen", "SettingsScreen", "TutorialScreen", "AboutScreen"]),
     ("overlay", service, ["TYPE_APPLICATION_OVERLAY", "startForeground", "landscape_enabled", "expand_seconds"]),
-    ("notification bridge", notification, ["onNotificationPosted", "RemoteInput.addResultsToIntent", "PendingIntent.CanceledException"]),
+    ("notification bridge", notification, ["onNotificationPosted", "RemoteInput.addResultsToIntent", "PendingIntent.CanceledException", "cancelNotification"]),
+    ("V2 pill", pill, ["IdleEyesView", "LyricsEngine.frame", "seekBar", "onDismissNotification", "adjustStreamVolume"]),
+    ("media bridge", media, ["ACTION_SKIP_TO_PREVIOUS", "ACTION_SKIP_TO_NEXT", "ACTION_SEEK_TO", "canToggle", "customAction"]),
+    ("lyrics engine", lyrics, ["wordTime", "activeWordIndex", "wordSynced"]),
 ]:
     for needle in needles:
         if needle not in content:
             print(f"{label} check failed: missing {needle}")
             sys.exit(1)
+
+app_gradle = (ROOT / "app/build.gradle.kts").read_text(encoding="utf-8")
+if 'versionCode = 2' not in app_gradle or 'versionName = "2.0.0"' not in app_gradle:
+    print("V2 application version check failed")
+    sys.exit(1)
+if "import android.app.BatteryManager" in main or "import androidx.compose.foundation.layout.weight" in main:
+    print("Known invalid / internal imports are present in MainActivity.kt")
+    sys.exit(1)
+if "import android.content.pm.ServiceInfo" not in service:
+    print("Foreground service import check failed")
+    sys.exit(1)
+if "rememberSaveable" not in main or "androidx.compose.runtime.saveable.rememberSaveable" not in main:
+    print("rememberSaveable import check failed")
+    sys.exit(1)
 
 for path in ROOT.rglob("*.kt"):
     content = path.read_text(encoding="utf-8")
@@ -68,5 +90,9 @@ for path in ROOT.rglob("*.kt"):
         print(f"Placeholder marker found in {path.relative_to(ROOT)}")
         sys.exit(1)
 
-print(f"AERIS structural checks passed: {len(REQUIRED)} required files, {len(xml_files)} XML resources.")
+if not (ROOT / "app/src/test/java/dev/aeris/island/media/LyricsEngineTest.kt").is_file():
+    print("Missing LyricsEngine unit tests in the Gradle test source set")
+    sys.exit(1)
+
+print(f"AERIS V2 structural checks passed: {len(REQUIRED)} required files, {len(xml_files)} XML resources.")
 print("Note: the GitHub Actions job performs the actual Android/Gradle compile.")
