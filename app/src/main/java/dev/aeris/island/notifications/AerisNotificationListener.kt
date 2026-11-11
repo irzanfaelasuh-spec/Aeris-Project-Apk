@@ -12,102 +12,106 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import java.util.LinkedHashMap
 
-data class NotificationSnapshot(
+ data class NotificationSnapshot(
     val title: String,
     val text: String,
     val packageName: String,
-    val key: String,
     val receivedAt: Long,
+    val key: String,
     val canReply: Boolean
 )
 
-private data class ReplyTarget(val pendingIntent: PendingIntent, val inputs: Array<RemoteInput>)
+private data class ReplyTarget(
+    val pendingIntent: PendingIntent,
+    val remoteInputs: Array<RemoteInput>
+)
 
-/** Notification text and reply targets are held in memory only. */
+/** In-memory notification queue. Notification text is never written to disk. */
 object NotificationStore {
-    private const val MAX_ITEMS = 12
-    private val items = LinkedHashMap<String, NotificationSnapshot>()
+    private const val MAX_RECENT = 8
+    private val queue = LinkedHashMap<String, NotificationSnapshot>()
     private val replyTargets = LinkedHashMap<String, ReplyTarget>()
 
-    @Volatile var latest: NotificationSnapshot? = null
+    @Volatile
+    var latest: NotificationSnapshot? = null
         private set
 
-    @Synchronized fun recent(): List<NotificationSnapshot> = items.values.toList().asReversed()
-    @Synchronized fun count(): Int = items.size
+    @Synchronized
+    fun recent(): List<NotificationSnapshot> = queue.values.toList().asReversed()
+
+    @Synchronized
+    fun count(): Int = queue.size
 
     @Synchronized
     fun accept(sbn: StatusBarNotification, ownPackage: String) {
         if (sbn.packageName == ownPackage) return
-        val n = sbn.notification ?: return
-        val extras = n.extras ?: Bundle.EMPTY
+        val notification = sbn.notification ?: return
+        val extras = notification.extras ?: Bundle.EMPTY
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
-        val body = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.takeIf { it.isNotBlank() }
+        val text = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+            ?.takeIf { it.isNotBlank() }
             ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
-        val action = n.actions?.firstOrNull { a ->
-            a.actionIntent != null && a.remoteInputs?.any { input -> input.allowFreeFormInput } == true
+        val action = notification.actions?.firstOrNull { candidate ->
+            candidate.actionIntent != null && candidate.remoteInputs?.any { it.allowFreeFormInput } == true
         }
-        val inputs = action?.remoteInputs?.filter { it.allowFreeFormInput }.orEmpty()
-        if (action?.actionIntent != null && inputs.isNotEmpty()) {
-            replyTargets[sbn.key] = ReplyTarget(action.actionIntent, inputs.toTypedArray())
-        } else replyTargets.remove(sbn.key)
+        val intent = action?.actionIntent
+        val remoteInputs = action?.remoteInputs?.filter { it.allowFreeFormInput }.orEmpty()
+        if (intent != null && remoteInputs.isNotEmpty()) {
+            replyTargets[sbn.key] = ReplyTarget(intent, remoteInputs.toTypedArray())
+        } else {
+            replyTargets.remove(sbn.key)
+        }
 
-        items.remove(sbn.key)
-        items[sbn.key] = NotificationSnapshot(
+        queue.remove(sbn.key) // Re-posting a notification moves it to the newest position.
+        queue[sbn.key] = NotificationSnapshot(
             title = title.ifBlank { sbn.packageName.substringAfterLast('.') },
-            text = body,
+            text = text,
             packageName = sbn.packageName,
-            key = sbn.key,
             receivedAt = sbn.postTime,
-            canReply = action?.actionIntent != null && inputs.isNotEmpty()
+            key = sbn.key,
+            canReply = intent != null && remoteInputs.isNotEmpty()
         )
-        while (items.size > MAX_ITEMS) {
-            val oldest = items.keys.firstOrNull() ?: break
-            items.remove(oldest)
-            replyTargets.remove(oldest)
+        while (queue.size > MAX_RECENT) {
+            val first = queue.entries.firstOrNull()?.key ?: break
+            queue.remove(first)
+            replyTargets.remove(first)
         }
-        latest = items.values.lastOrNull()
-    }
-
-    @Synchronized fun remove(key: String) {
-        items.remove(key)
-        replyTargets.remove(key)
-        latest = items.values.lastOrNull()
-    }
-
-    @Synchronized fun markSourceRemoved(key: String) {
-        replyTargets.remove(key)
-        items[key]?.let { items[key] = it.copy(canReply = false) }
-        latest = items.values.lastOrNull()
+        latest = queue.values.lastOrNull()
     }
 
     @Synchronized
-    fun sendReply(context: Context, key: String, message: String): Boolean {
+    fun sendReply(context: Context, message: String, notificationKey: String? = latest?.key): Boolean {
+        val target = notificationKey?.let { replyTargets[it] } ?: return false
         if (message.isBlank()) return false
-        val target = replyTargets[key] ?: return false
         return try {
             val fillIn = Intent()
-            val data = Bundle().apply { target.inputs.forEach { putCharSequence(it.resultKey, message) } }
-            RemoteInput.addResultsToIntent(target.inputs, fillIn, data)
+            val results = Bundle().apply {
+                target.remoteInputs.forEach { input -> putCharSequence(input.resultKey, message) }
+            }
+            RemoteInput.addResultsToIntent(target.remoteInputs, fillIn, results)
             target.pendingIntent.send(context, 0, fillIn)
             true
-        } catch (_: PendingIntent.CanceledException) { false }
-        catch (_: Exception) { false }
+        } catch (_: PendingIntent.CanceledException) {
+            false
+        } catch (_: Exception) {
+            false
+        }
     }
 }
 
 class AerisNotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
-        active = this
+        activeListener = this
     }
 
     override fun onListenerDisconnected() {
-        if (active === this) active = null
+        if (activeListener === this) activeListener = null
         super.onListenerDisconnected()
     }
 
     override fun onDestroy() {
-        if (active === this) active = null
+        if (activeListener === this) activeListener = null
         super.onDestroy()
     }
 
@@ -116,20 +120,28 @@ class AerisNotificationListener : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        // Keep the in-app history entry, but invalidate its inline-reply target.
-        NotificationStore.markSourceRemoved(sbn.key)
+        // Keep the in-memory snapshot so the user can still browse recent history.
+        // Reply may no longer work if Android cancels the source PendingIntent.
     }
 
     companion object {
-        @Volatile private var active: AerisNotificationListener? = null
+        @Volatile private var activeListener: AerisNotificationListener? = null
 
-        fun dismiss(key: String): Boolean {
-            val listener = active ?: return false
-            return try { listener.cancelNotification(key); true } catch (_: Exception) { false }
+        fun dismissNotification(key: String): Boolean {
+            val listener = activeListener ?: return false
+            return try {
+                listener.cancelNotification(key)
+                true
+            } catch (_: Exception) {
+                false
+            }
         }
 
         fun isEnabled(context: Context): Boolean {
-            val enabled = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners") ?: return false
+            val enabled = Settings.Secure.getString(
+                context.contentResolver,
+                "enabled_notification_listeners"
+            ) ?: return false
             val expected = ComponentName(context, AerisNotificationListener::class.java)
             return enabled.split(':').any { ComponentName.unflattenFromString(it) == expected }
         }
