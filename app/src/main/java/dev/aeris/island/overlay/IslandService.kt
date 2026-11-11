@@ -1,432 +1,809 @@
 package dev.aeris.island.overlay
 
-import android.animation.ValueAnimator
-import android.app.PendingIntent
-import android.app.Service
 import android.content.Context
-import android.content.Intent
-import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.ColorFilter
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RadialGradient
+import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.PixelFormat
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
-import android.os.Build
-import android.os.Handler
-import android.os.IBinder
-import android.os.Looper
-import android.os.SystemClock
-import android.provider.Settings
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.TextUtils
+import android.text.style.BackgroundColorSpan
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
+import android.graphics.Typeface
+import android.view.GestureDetector
 import android.view.Gravity
-import android.view.WindowManager
-import android.view.animation.PathInterpolator
-import android.content.pm.ServiceInfo
-import androidx.core.app.NotificationCompat
-import androidx.core.app.ServiceCompat
-import dev.aeris.island.AerisApp
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
+import android.view.inputmethod.InputMethodManager
+import android.content.Context.INPUT_METHOD_SERVICE
+import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.SeekBar
+import android.widget.TextView
+import android.text.InputType
 import dev.aeris.island.AerisPrefs
-import dev.aeris.island.MainActivity
-import dev.aeris.island.R
+import dev.aeris.island.media.LyricsEngine
 import dev.aeris.island.media.MediaBridge
 import dev.aeris.island.media.MediaSnapshot
 import dev.aeris.island.notifications.NotificationSnapshot
 import dev.aeris.island.notifications.NotificationStore
-import dev.aeris.island.notifications.AerisNotificationListener
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.sin
 
-class IslandService : Service(), PillOverlayView.Callbacks {
-    private val handler = Handler(Looper.getMainLooper())
-    private lateinit var windowManager: WindowManager
-    private var islandView: PillOverlayView? = null
-    private var layoutParams: WindowManager.LayoutParams? = null
-    private var resizeAnimator: ValueAnimator? = null
-    private var lastMediaKey = ""
-    private var lastNotificationSignature = ""
-    private var expandedUntil = 0L
-    private var focusForReply = false
-    private var notificationIndex = 0
-    private var introAnimationUntil = 0L
+/** Polished, adaptive Dynamic Island surface. All notification text remains in memory only. */
+class PillOverlayView(context: Context, private val callbacks: Callbacks) : LinearLayout(context) {
+    interface Callbacks {
+        fun onReplyRequested(notificationKey: String)
+        fun onReplyFinished()
+        fun onDismissNotification(notificationKey: String)
+        fun onToggleExpanded()
+        fun onGestureAction(action: String)
+        fun onOutsideTouch()
+        fun onNotificationHistoryChanged(index: Int)
+        fun onContentSizeChanged()
+    }
 
-    private val refreshTask = object : Runnable {
-        override fun run() {
-            refreshIsland()
-            val delay = if (AerisPrefs.bool(this@IslandService, "low_power", false)) 1250L else REFRESH_MS
-            handler.postDelayed(this, delay)
+    private val header = LinearLayout(context)
+    private val art = ImageView(context)
+    private val textColumn = LinearLayout(context)
+    private val title = TextView(context)
+    private val subtitle = TextView(context)
+    private val visualizer = VisualizerStrip(context)
+    private val idleMark = View(context)
+    private val idleMessage = TextView(context)
+    private val musicPanel = LinearLayout(context)
+    private val timeRow = LinearLayout(context)
+    private val elapsedText = TextView(context)
+    private val durationText = TextView(context)
+    private val seekBar = SeekBar(context)
+    private val controls = LinearLayout(context)
+    private val lyricsBlock = LinearLayout(context)
+    private val previousLyric = lyricText(11f, 0xFF9DA9B6.toInt())
+    private val activeLyric = lyricText(15f, Color.WHITE)
+    private val nextLyric = lyricText(11f, 0xFF9DA9B6.toInt())
+    private val lyricUnavailable = lyricText(11f, 0xFFDCE5ED.toInt()).apply { gravity = Gravity.CENTER }
+    private val notificationCard = LinearLayout(context)
+    private val notificationHeader = LinearLayout(context)
+    private val notificationIcon = ImageView(context)
+    private val notificationTextColumn = LinearLayout(context)
+    private val notificationTitle = TextView(context)
+    private val notificationBody = TextView(context)
+    private val notificationNavigation = LinearLayout(context)
+    private val notificationPosition = TextView(context)
+    private val replyArea = LinearLayout(context)
+    private val replyInput = EditText(context)
+    private var notificationPreviousButton: View? = null
+    private var notificationNextButton: View? = null
+    private var notificationReplyButton: View? = null
+    private val emptyState = TextView(context)
+
+    private var currentMedia: MediaSnapshot? = null
+    private var notifications: List<NotificationSnapshot> = emptyList()
+    private var selectedNotification: NotificationSnapshot? = null
+    private var selectedIndex = 0
+    private var expanded = false
+    private var isSeeking = false
+    private var lyricsExpanded = false
+    private var liquidGlass = false
+    private var lastLyricsKey = ""
+    private var lastLyricSignature = ""
+    private var cachedLyricsRaw: String? = null
+    private var cachedLyricsLines = emptyList<dev.aeris.island.media.LyricLine>()
+    private var lastArtworkKey = ""
+    private var lastNotificationKey = ""
+    private var currentAccent = 0xFF79C9DA.toInt()
+    private var lastSheenMode = false
+    private var lastSheenAccent = 0
+    private var gestureStartX = 0f
+
+    val isLyricsExpanded: Boolean get() = lyricsExpanded
+
+    init {
+        orientation = VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        setPadding(dp(12), dp(5), dp(12), dp(7))
+        background = pillBackground(currentAccent, false)
+        elevation = dp(18).toFloat()
+        clipToOutline = true
+        isClickable = true
+        isFocusable = true
+
+        header.orientation = HORIZONTAL
+        header.gravity = Gravity.CENTER_VERTICAL
+        header.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, dp(34))
+        header.isClickable = true
+        header.isLongClickable = true
+
+        art.scaleType = ImageView.ScaleType.CENTER_CROP
+        art.clipToOutline = true
+        art.layoutParams = LayoutParams(dp(29), dp(29)).apply { marginEnd = dp(10) }
+        header.addView(art)
+
+        textColumn.orientation = VERTICAL
+        textColumn.gravity = Gravity.CENTER_VERTICAL
+        textColumn.layoutParams = LayoutParams(0, LayoutParams.MATCH_PARENT, 1f)
+        title.setTextColor(Color.WHITE)
+        title.textSize = 15f
+        title.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        title.maxLines = 1
+        title.ellipsize = TextUtils.TruncateAt.END
+        subtitle.setTextColor(0xFFB6BEC8.toInt())
+        subtitle.textSize = 12f
+        subtitle.maxLines = 1
+        subtitle.ellipsize = TextUtils.TruncateAt.END
+        textColumn.addView(title)
+        textColumn.addView(subtitle)
+        header.addView(textColumn)
+
+        visualizer.layoutParams = LayoutParams(dp(31), dp(25)).apply { marginStart = dp(7) }
+        header.addView(visualizer)
+        idleMark.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(0xFF9BA8B6.toInt())
         }
-    }
+        idleMark.layoutParams = LayoutParams(dp(5), dp(5)).apply { marginStart = dp(5) }
+        idleMark.visibility = GONE
+        header.addView(idleMark)
+        addView(header)
 
-    override fun onCreate() {
-        super.onCreate()
-        windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        (application as? AerisApp)?.ensureNotificationChannel()
-    }
+        idleMessage.text = "AERIS  ·  READY"
+        idleMessage.textSize = 10f
+        idleMessage.setTextColor(0xFF8793A1.toInt())
+        idleMessage.letterSpacing = 0.08f
+        idleMessage.gravity = Gravity.CENTER
+        idleMessage.setPadding(0, dp(13), 0, dp(10))
+        idleMessage.visibility = GONE
+        addView(idleMessage, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
-                stopSelf()
-                return START_NOT_STICKY
+        musicPanel.orientation = VERTICAL
+        musicPanel.gravity = Gravity.CENTER_HORIZONTAL
+        musicPanel.setPadding(0, dp(8), 0, 0)
+        addView(musicPanel, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+
+        timeRow.orientation = HORIZONTAL
+        timeRow.gravity = Gravity.CENTER_VERTICAL
+        elapsedText.textSize = 10f
+        elapsedText.setTextColor(0xFFE0E5EB.toInt())
+        durationText.textSize = 10f
+        durationText.setTextColor(0xFFA8B1BC.toInt())
+        timeRow.addView(elapsedText)
+        timeRow.addView(View(context), LayoutParams(0, 1, 1f))
+        timeRow.addView(durationText)
+        musicPanel.addView(timeRow)
+
+        seekBar.max = 1000
+        seekBar.progressTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+        seekBar.thumbTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+        seekBar.progressBackgroundTintList = android.content.res.ColorStateList.valueOf(0x665F6874)
+        seekBar.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, dp(25))
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) elapsedText.text = formatTime((currentMedia?.durationMs ?: 0L) * progress / 1000L)
             }
-            ACTION_START, null -> Unit
-            else -> Unit
+            override fun onStartTrackingTouch(bar: SeekBar?) { isSeeking = true }
+            override fun onStopTrackingTouch(bar: SeekBar?) {
+                isSeeking = false
+                val duration = currentMedia?.durationMs ?: 0L
+                if (duration > 0L) MediaBridge.seekTo(context, duration * (bar?.progress ?: 0) / 1000L)
+            }
+        })
+        musicPanel.addView(seekBar)
+
+        controls.orientation = HORIZONTAL
+        controls.gravity = Gravity.CENTER
+        controls.setPadding(0, dp(4), 0, dp(2))
+        musicPanel.addView(controls, LayoutParams(LayoutParams.MATCH_PARENT, dp(48)))
+
+        lyricsBlock.orientation = VERTICAL
+        lyricsBlock.gravity = Gravity.CENTER
+        lyricsBlock.background = roundedBackground(0x30101822, dp(17).toFloat())
+        lyricsBlock.setPadding(dp(10), dp(8), dp(10), dp(8))
+        previousLyric.gravity = Gravity.CENTER
+        activeLyric.gravity = Gravity.CENTER
+        activeLyric.maxLines = 2
+        activeLyric.ellipsize = TextUtils.TruncateAt.END
+        nextLyric.gravity = Gravity.CENTER
+        lyricsBlock.addView(previousLyric, LayoutParams(LayoutParams.MATCH_PARENT, dp(18)))
+        lyricsBlock.addView(activeLyric, LayoutParams(LayoutParams.MATCH_PARENT, dp(34)))
+        lyricsBlock.addView(nextLyric, LayoutParams(LayoutParams.MATCH_PARENT, dp(18)))
+        lyricsBlock.addView(lyricUnavailable, LayoutParams(LayoutParams.MATCH_PARENT, dp(34)))
+        lyricsBlock.visibility = GONE
+        musicPanel.addView(lyricsBlock, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(7)
+        })
+
+        notificationCard.orientation = VERTICAL
+        notificationCard.setPadding(dp(10), dp(10), dp(10), dp(9))
+        notificationCard.background = roundedBackground(0xFF153026.toInt(), dp(19).toFloat())
+        notificationCard.visibility = GONE
+        notificationHeader.orientation = HORIZONTAL
+        notificationHeader.gravity = Gravity.CENTER_VERTICAL
+        notificationIcon.scaleType = ImageView.ScaleType.CENTER_CROP
+        notificationIcon.clipToOutline = true
+        notificationIcon.background = roundedBackground(0xFF222A32.toInt(), dp(11).toFloat())
+        notificationHeader.addView(notificationIcon, LayoutParams(dp(34), dp(34)).apply { marginEnd = dp(9) })
+        notificationTextColumn.orientation = VERTICAL
+        notificationTextColumn.layoutParams = LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f)
+        notificationTitle.setTextColor(Color.WHITE)
+        notificationTitle.textSize = 12f
+        notificationTitle.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        notificationTitle.maxLines = 1
+        notificationTitle.ellipsize = TextUtils.TruncateAt.END
+        notificationBody.setTextColor(0xFFE1E7E4.toInt())
+        notificationBody.textSize = 11f
+        notificationBody.maxLines = 2
+        notificationBody.ellipsize = TextUtils.TruncateAt.END
+        notificationTextColumn.addView(notificationTitle)
+        notificationTextColumn.addView(notificationBody)
+        notificationHeader.addView(notificationTextColumn)
+        notificationCard.addView(notificationHeader)
+
+        notificationNavigation.orientation = HORIZONTAL
+        notificationNavigation.gravity = Gravity.CENTER_VERTICAL
+        notificationNavigation.setPadding(0, dp(7), 0, 0)
+        notificationPosition.textSize = 9f
+        notificationPosition.setTextColor(0xFFC7D2CC.toInt())
+        notificationPosition.gravity = Gravity.CENTER
+        val previousNotificationButton = glyphButton("‹", "Previous notification") {
+            navigateNotificationHistory(1)
         }
-        startAsForeground()
-        AerisPrefs.setBool(this, "service_active", true)
-        if (!Settings.canDrawOverlays(this) || !AerisPrefs.islandEnabled(this)) {
-            stopSelf()
-            return START_NOT_STICKY
+        notificationPreviousButton = previousNotificationButton
+        notificationNavigation.addView(previousNotificationButton)
+        notificationNavigation.addView(notificationPosition, LayoutParams(0, dp(34), 1f))
+        val nextNotificationButton = glyphButton("›", "Next notification") {
+            navigateNotificationHistory(-1)
         }
-        attachIsland()
-        handler.removeCallbacks(refreshTask)
-        handler.post(refreshTask)
-        return START_STICKY
+        notificationNextButton = nextNotificationButton
+        notificationNavigation.addView(nextNotificationButton)
+        val replyNotificationButton = glyphButton("↗", "Reply to notification") {
+            selectedNotification?.takeIf { it.canReply }?.let { callbacks.onReplyRequested(it.key) }
+        }
+        notificationReplyButton = replyNotificationButton
+        notificationNavigation.addView(replyNotificationButton)
+        notificationNavigation.addView(glyphButton("×", "Dismiss notification") {
+            selectedNotification?.let { callbacks.onDismissNotification(it.key) }
+        })
+        notificationCard.addView(notificationNavigation)
+        addView(notificationCard, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(9)
+        })
+
+        replyArea.orientation = HORIZONTAL
+        replyArea.gravity = Gravity.CENTER_VERTICAL
+        replyArea.visibility = GONE
+        replyArea.setPadding(0, dp(8), 0, 0)
+        replyInput.hint = "Message…"
+        replyInput.setHintTextColor(0xFF9AA6B2.toInt())
+        replyInput.setTextColor(Color.WHITE)
+        replyInput.textSize = 13f
+        replyInput.setSingleLine(true)
+        replyInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        replyInput.background = roundedBackground(0xCC111923.toInt(), dp(14).toFloat())
+        replyInput.setPadding(dp(12), dp(9), dp(12), dp(9))
+        replyInput.layoutParams = LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) }
+        replyArea.addView(replyInput)
+        replyArea.addView(glyphButton("↑", "Send reply", true) {
+            val targetKey = selectedNotification?.key
+            val sent = NotificationStore.sendReply(context, replyInput.text?.toString().orEmpty(), targetKey)
+            if (sent) {
+                replyInput.setText("")
+                (context.getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)
+                    ?.hideSoftInputFromWindow(replyInput.windowToken, 0)
+                callbacks.onReplyFinished()
+            }
+        })
+        addView(replyArea)
+
+        val gestureListener = object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                runShortcut("shortcut_tap", "expand")
+                return true
+            }
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                runShortcut("shortcut_double", "play_pause")
+                return true
+            }
+            override fun onLongPress(e: MotionEvent) {
+                runShortcut("shortcut_long", "next_track")
+            }
+        }
+        val gestureDetector = GestureDetector(context, gestureListener)
+        header.setOnTouchListener { _, event -> gestureDetector.onTouchEvent(event) }
+        setOnTouchListener { _, event ->
+            if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+                callbacks.onOutsideTouch()
+                true
+            } else gestureDetector.onTouchEvent(event)
+        }
+
+        val notificationSwipe = View.OnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    gestureStartX = event.rawX
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val delta = event.rawX - gestureStartX
+                    if (abs(delta) > dp(34) && notifications.size > 1) {
+                        val step = if (delta < 0f) 1 else -1
+                        navigateNotificationHistory(step)
+                    }
+                    true
+                }
+                else -> true
+            }
+        }
+        notificationTextColumn.setOnTouchListener(notificationSwipe)
+        notificationIcon.setOnTouchListener(notificationSwipe)
     }
 
-    private fun startAsForeground() {
-        val openApp = PendingIntent.getActivity(
-            this,
-            10,
-            Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val notification = NotificationCompat.Builder(this, AerisApp.CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_status)
-            .setContentTitle("AERIS is active")
-            .setContentText("Your Dynamic Island controls are ready.")
-            .setContentIntent(openApp)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .build()
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-        } else 0
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
+    private fun navigateNotificationHistory(step: Int) {
+        val count = notifications.size
+        if (count <= 1) return
+        val nextIndex = (selectedIndex + step + count) % count
+        callbacks.onNotificationHistoryChanged(nextIndex)
     }
 
-    private fun attachIsland() {
-        if (islandView != null || !Settings.canDrawOverlays(this)) return
-        val view = PillOverlayView(this, this)
-        val params = buildLayoutParams()
-        try {
-            view.alpha = 0f
-            view.translationY = -dp(10).toFloat()
-            view.scaleX = 0.96f
-            view.scaleY = 0.96f
-            windowManager.addView(view, params)
-            islandView = view
-            layoutParams = params
-            introAnimationUntil = SystemClock.uptimeMillis() + 430L
-            view.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)
-                .setDuration(430L).setInterpolator(PathInterpolator(0.18f, 0.78f, 0.22f, 1f)).start()
-        } catch (_: Exception) {
-            islandView = null
-            layoutParams = null
-        }
+    private fun setButtonEnabled(button: View?, enabled: Boolean) {
+        button ?: return
+        button.isEnabled = enabled
+        button.isClickable = enabled
+        button.alpha = if (enabled) 1f else 0.36f
     }
 
-    private fun buildLayoutParams(): WindowManager.LayoutParams {
-        val screenWidthDp = (resources.displayMetrics.widthPixels / resources.displayMetrics.density).toInt()
-        val collapsedWidth = AerisPrefs.int(this, "island_width", 212)
-        val maxWidthDp = (screenWidthDp - 20).coerceAtLeast(140)
-        val width = dp(minOf(collapsedWidth, maxWidthDp))
-        val height = dp(AerisPrefs.int(this, "island_height", 44).coerceIn(38, 56))
-        val y = dp(AerisPrefs.int(this, "island_y", 5).coerceIn(0, 34))
-        return WindowManager.LayoutParams(
-            width,
-            height,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            x = 0
-            this.y = y
-            windowAnimations = android.R.style.Animation_Toast
-        }
+    private fun runShortcut(key: String, fallback: String) {
+        if (key == "shortcut_tap" && !AerisPrefs.bool(context, "tap_to_expand", true)) return
+        val action = AerisPrefs.string(context, key, fallback)
+        if (action != "none") callbacks.onGestureAction(action)
     }
 
-    private fun refreshIsland() {
-        if (!Settings.canDrawOverlays(this) || !AerisPrefs.islandEnabled(this)) {
-            stopSelf()
-            return
-        }
-        if (islandView == null) attachIsland()
-        val view = islandView ?: return
-
-        val media = if (AerisPrefs.bool(this, "music_enabled", true)) MediaBridge.current(this) else null
-        val notificationEnabled = AerisPrefs.bool(this, "notifications_enabled", true)
-        val recent = if (notificationEnabled) NotificationStore.recent() else emptyList()
-        if (notificationIndex >= recent.size) notificationIndex = 0
-        val latestNotification = recent.firstOrNull()
-        val selected = recent.getOrNull(notificationIndex)
-
-        val mediaKey = media?.let { "${it.packageName}|${it.title}|${it.artist}|${it.playing}" }.orEmpty()
-        if (mediaKey.isNotBlank() && mediaKey != lastMediaKey && AerisPrefs.bool(this, "auto_expand_music", true)) {
-            requestTimedExpansion(isNotification = false)
-        }
-        lastMediaKey = mediaKey
-
-        val notificationSignature = latestNotification?.let { "${it.key}|${it.receivedAt}" }.orEmpty()
-        if (notificationSignature.isNotBlank() && notificationSignature != lastNotificationSignature &&
-            AerisPrefs.bool(this, "auto_expand_notifications", true)) {
-            notificationIndex = 0
-            requestTimedExpansion(isNotification = true)
-        }
-        lastNotificationSignature = notificationSignature
-
-        val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-        if (landscape && !AerisPrefs.bool(this, "landscape_enabled", true)) {
-            view.visibility = android.view.View.GONE
-            return
-        }
-        view.visibility = android.view.View.VISIBLE
-
-        val idle = media == null && selected == null
-        val baseOpacity = AerisPrefs.int(this, "island_opacity", 100).coerceIn(68, 100) / 100f
-        if (SystemClock.uptimeMillis() >= introAnimationUntil) {
-            view.alpha = if (idle && AerisPrefs.bool(this, "fade_when_idle", false)) minOf(baseOpacity, 0.82f) else baseOpacity
-        }
-        val showExpanded = focusForReply || System.currentTimeMillis() < expandedUntil
-        view.updateContent(
-            media = media,
-            recentNotifications = recent,
-            selectedNotificationIndex = notificationIndex,
-            expanded = showExpanded,
-            hideSensitive = AerisPrefs.bool(this, "hide_sensitive", false),
-            showArtwork = AerisPrefs.bool(this, "show_artwork", true),
-            showVisualizer = AerisPrefs.bool(this, "visualizer_enabled", true),
-            showMediaControls = AerisPrefs.bool(this, "media_controls", true),
-            showNotificationText = AerisPrefs.bool(this, "notification_preview", true),
-            showReply = AerisPrefs.bool(this, "quick_reply", true),
-            showTrackState = AerisPrefs.bool(this, "show_track_state", true),
-            showSourceApp = AerisPrefs.bool(this, "show_source_app", true),
-            cornerRadius = AerisPrefs.int(this, "corner_radius", 42),
-            visualizerSpeed = AerisPrefs.int(this, "animation_speed", 100),
-            showLyrics = AerisPrefs.bool(this, "lyrics_enabled", true),
-            useLiquidGlass = AerisPrefs.bool(this, "liquid_glass", true)
-        )
-        updateLayoutForCurrentMode(showExpanded, media, selected, view.isLyricsExpanded)
-    }
-
-    private fun requestTimedExpansion(isNotification: Boolean) {
-        if (!AerisPrefs.bool(this, "auto_collapse", true)) {
-            expandedUntil = Long.MAX_VALUE
-            return
-        }
-        val seconds = if (isNotification) {
-            AerisPrefs.int(this, "notification_preview_seconds", 2).coerceIn(2, 8)
-        } else {
-            AerisPrefs.int(this, "expand_seconds", 2).coerceIn(2, 8)
-        }
-        expandedUntil = System.currentTimeMillis() + seconds * 1000L
-        animateOpen()
-    }
-
-    private fun updateLayoutForCurrentMode(
-        expanded: Boolean,
+    fun updateContent(
         media: MediaSnapshot?,
-        notification: NotificationSnapshot?,
-        showLyrics: Boolean
+        recentNotifications: List<NotificationSnapshot>,
+        selectedNotificationIndex: Int,
+        expanded: Boolean,
+        hideSensitive: Boolean,
+        showArtwork: Boolean,
+        showVisualizer: Boolean,
+        showMediaControls: Boolean,
+        showNotificationText: Boolean,
+        showReply: Boolean,
+        showTrackState: Boolean,
+        showSourceApp: Boolean,
+        cornerRadius: Int,
+        visualizerSpeed: Int,
+        showLyrics: Boolean,
+        useLiquidGlass: Boolean
     ) {
-        val view = islandView ?: return
-        val current = layoutParams ?: return
-        val screenWidthDp = (resources.displayMetrics.widthPixels / resources.displayMetrics.density).toInt()
-        val screenHeightDp = (resources.displayMetrics.heightPixels / resources.displayMetrics.density).toInt()
-        val maxWidthDp = (screenWidthDp - 20).coerceAtLeast(140)
-        val requestedWidth = if (expanded) AerisPrefs.int(this, "expanded_width", 340) else AerisPrefs.int(this, "island_width", 212)
-        val targetWidth = dp(minOf(requestedWidth, maxWidthDp).coerceAtLeast(140))
-        val baseHeight = when {
-            !expanded -> AerisPrefs.int(this, "island_height", 44).coerceIn(38, 56)
-            media != null && notification != null -> if (showLyrics) 362 else 302
-            media != null -> if (showLyrics) 300 else 242
-            notification != null -> 184
-            else -> 92
-        }
-        val keyboardExtra = if (focusForReply) 54 else 0
-        val safeHeight = (screenHeightDp - 80).coerceAtLeast(180)
-        val targetHeight = dp((baseHeight + keyboardExtra).coerceAtMost((safeHeight * 0.74f).toInt()))
-        updateBlurForMode(current, expanded)
-        try { windowManager.updateViewLayout(view, current) } catch (_: Exception) { }
-        if (current.width == targetWidth && current.height == targetHeight) return
+        currentMedia = media
+        notifications = recentNotifications
+        selectedIndex = selectedNotificationIndex.coerceIn(0, (notifications.size - 1).coerceAtLeast(0))
+        selectedNotification = notifications.getOrNull(selectedIndex)
+        setButtonEnabled(notificationPreviousButton, notifications.size > 1)
+        setButtonEnabled(notificationNextButton, notifications.size > 1)
+        setButtonEnabled(notificationReplyButton, selectedNotification?.canReply == true && showReply)
+        this.expanded = expanded
+        liquidGlass = useLiquidGlass
 
-        resizeAnimator?.cancel()
-        val startWidth = current.width
-        val startHeight = current.height
-        resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = if (AerisPrefs.bool(this@IslandService, "reduce_motion", false)) 150L else 330L
-            interpolator = PathInterpolator(0.2f, 0.82f, 0.2f, 1f)
-            addUpdateListener { animator ->
-                val fraction = animator.animatedValue as Float
-                current.width = (startWidth + (targetWidth - startWidth) * fraction).toInt()
-                current.height = (startHeight + (targetHeight - startHeight) * fraction).toInt()
-                try { windowManager.updateViewLayout(view, current) } catch (_: Exception) { }
+        val mediaAccent = media?.artwork?.let(::sampleAccent) ?: 0xFF79C9DA.toInt()
+        currentAccent = mediaAccent
+        background = pillBackground(mediaAccent, liquidGlass, cornerRadius)
+        if (lastSheenMode != liquidGlass || lastSheenAccent != mediaAccent) {
+            foreground = if (liquidGlass) GlassSheenDrawable(mediaAccent) else null
+            lastSheenMode = liquidGlass
+            lastSheenAccent = mediaAccent
+        }
+        visualizer.speed = (visualizerSpeed.coerceIn(40, 180) / 100f) * 0.24f
+        visualizer.isActive = showVisualizer && media?.playing == true && !AerisPrefs.bool(context, "reduce_motion", false)
+
+        val hasMedia = media != null
+        val hasNotification = selectedNotification != null
+        val showNotificationContent = expanded && hasNotification
+        val hasActivity = hasMedia || showNotificationContent
+        val showCollapsedArtwork = !expanded && hasMedia && showArtwork
+        val showExpandedArtwork = expanded && hasMedia && showArtwork
+        art.visibility = if (showCollapsedArtwork || showExpandedArtwork || (!hasMedia && showNotificationContent && showArtwork)) VISIBLE else GONE
+        art.layoutParams = LayoutParams(
+            dp(if (expanded && hasMedia) 58 else if (expanded && hasNotification && !hasMedia) 42 else 29),
+            dp(if (expanded && hasMedia) 58 else if (expanded && hasNotification && !hasMedia) 42 else 29)
+        ).apply { marginEnd = dp(10) }
+        art.background = imageShape(if (expanded) dp(15).toFloat() else 1000f)
+        art.clipToOutline = true
+        val artworkKey = when {
+            hasMedia -> "media|${media!!.packageName}|${media.title}|${media.artwork?.generationId ?: 0}"
+            showNotificationContent -> "notification|${selectedNotification!!.packageName}"
+            else -> ""
+        }
+        if (artworkKey != lastArtworkKey) {
+            if (hasMedia && media!!.artwork != null) art.setImageBitmap(media.artwork)
+            else if (hasMedia) setAppIcon(media!!.packageName, art)
+            else if (hasNotification) setAppIcon(selectedNotification!!.packageName, art)
+            else art.setImageDrawable(null)
+            lastArtworkKey = artworkKey
+        }
+
+        textColumn.visibility = if (hasActivity) VISIBLE else GONE
+        idleMark.visibility = if (!hasActivity) VISIBLE else GONE
+        visualizer.visibility = if (showVisualizer) VISIBLE else GONE
+        title.text = when {
+            hasMedia -> media!!.title
+            showNotificationContent -> if (hideSensitive) "New notification" else selectedNotification!!.title.ifBlank { appName(selectedNotification!!.packageName) }
+            else -> ""
+        }
+        subtitle.text = when {
+            hasMedia -> if (showTrackState) "${media!!.artist}  ·  ${if (media.playing) "Playing" else "Paused"}" else media!!.artist
+            showNotificationContent && showSourceApp -> appName(selectedNotification!!.packageName)
+            showNotificationContent -> "Notification"
+            else -> ""
+        }
+        header.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, dp(if (expanded) 58 else 34))
+
+        idleMessage.visibility = if (expanded && !hasActivity) VISIBLE else GONE
+        idleMessage.text = if (expanded && !hasActivity) "AERIS  ·  READY" else ""
+        musicPanel.visibility = if (expanded && hasMedia) VISIBLE else GONE
+        if (hasMedia) {
+            val duration = media!!.durationMs
+            val position = media.positionMs
+            if (!isSeeking) {
+                seekBar.progress = if (duration > 0L) ((position.toDouble() / duration.toDouble()) * 1000.0).toInt().coerceIn(0, 1000) else 0
+                elapsedText.text = formatTime(position)
             }
-            start()
-        }
-    }
-
-    private fun updateBlurForMode(params: WindowManager.LayoutParams, expanded: Boolean) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
-        val wantGlassBlur = expanded && AerisPrefs.bool(this, "liquid_glass", true)
-        try {
-            if (wantGlassBlur && windowManager.isCrossWindowBlurEnabled) {
-                params.flags = params.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-                params.setBlurBehindRadius(dp(18))
-                params.dimAmount = 0.08f
-            } else {
-                params.flags = params.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv()
-                params.setBlurBehindRadius(0)
-                params.dimAmount = 0f
+            durationText.text = formatTime(duration)
+            timeRow.visibility = if (duration > 0L) VISIBLE else GONE
+            seekBar.visibility = if (media.canSeek && duration > 0L) VISIBLE else GONE
+            rebuildControls(media, showMediaControls, showLyrics)
+            val raw = if (showLyrics) media.lyrics else null
+            if (raw != cachedLyricsRaw) {
+                cachedLyricsRaw = raw
+                cachedLyricsLines = LyricsEngine.parse(raw)
             }
-        } catch (_: Exception) {
-            params.flags = params.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv()
-            params.dimAmount = 0f
-        }
-    }
-
-    private fun animateOpen() {
-        islandView?.let { view ->
-            view.animate().cancel()
-            view.scaleX = 0.97f
-            view.scaleY = 0.97f
-            view.alpha = 0.9f
-            view.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(280L)
-                .setInterpolator(PathInterpolator(0.18f, 0.78f, 0.22f, 1f)).start()
-        }
-    }
-
-    private fun animateClose() {
-        islandView?.let { view ->
-            view.animate().cancel()
-            view.animate().scaleX(0.985f).scaleY(0.985f).alpha(0.92f).setDuration(150L)
-                .setInterpolator(PathInterpolator(0.3f, 0f, 0.7f, 1f)).withEndAction {
-                    view.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(160L).start()
-                }.start()
-        }
-    }
-
-    override fun onReplyRequested(notificationKey: String) {
-        focusForReply = true
-        val params = layoutParams ?: return
-        params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
-        try {
-            islandView?.let { view ->
-                updateLayoutForCurrentMode(true, MediaBridge.current(this), NotificationStore.recent().firstOrNull { it.key == notificationKey }, view.isLyricsExpanded)
-                view.showReplyEditor()
+            val lyricFrame = LyricsEngine.frame(cachedLyricsLines, position)
+            val hasPlain = cachedLyricsLines.isEmpty() && !raw.isNullOrBlank()
+            val hasLyricsData = lyricFrame != null || hasPlain
+            lyricsBlock.visibility = if (expanded && lyricsExpanded && showLyrics) VISIBLE else GONE
+            previousLyric.visibility = if (lyricFrame != null) VISIBLE else GONE
+            activeLyric.visibility = if (lyricFrame != null) VISIBLE else GONE
+            nextLyric.visibility = if (lyricFrame != null) VISIBLE else GONE
+            lyricUnavailable.visibility = if (!hasLyricsData) VISIBLE else GONE
+            val signature = "${media.packageName}|${media.title}|${lyricFrame?.current}|${lyricFrame?.activeWordIndex}|$hasPlain"
+            if (signature != lastLyricsKey || lyricFrame?.current != lastLyricSignature) {
+                previousLyric.text = lyricFrame?.previous.orEmpty()
+                nextLyric.text = lyricFrame?.next.orEmpty()
+                activeLyric.text = makeLyricSpan(lyricFrame)
+                lyricUnavailable.text = "♫   Lyrics aren't exposed by this player"
+                activeLyric.alpha = 0.65f
+                activeLyric.animate().alpha(1f).setDuration(210L).start()
+                lastLyricsKey = signature
+                lastLyricSignature = lyricFrame?.current.orEmpty()
             }
-        } catch (_: Exception) { }
-    }
-
-    override fun onDismissNotification(notificationKey: String) {
-        // Dismiss from Android's notification shade, but retain the in-memory
-        // snapshot so it remains available in AERIS notification history.
-        if (AerisNotificationListener.dismissNotification(notificationKey)) {
-            notificationIndex = 0
-            refreshIsland()
-        }
-    }
-
-    override fun onReplyFinished() {
-        focusForReply = false
-        val params = layoutParams ?: return
-        params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        islandView?.hideReplyEditor()
-        refreshIsland()
-    }
-
-    override fun onToggleExpanded() {
-        val now = System.currentTimeMillis()
-        val isCurrentlyExpanded = focusForReply || now < expandedUntil
-        if (isCurrentlyExpanded) {
-            expandedUntil = 0L
-            focusForReply = false
-            islandView?.hideReplyEditor()
-            layoutParams?.let { it.flags = it.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE }
-            animateClose()
+            if (hasPlain) {
+                activeLyric.text = raw.orEmpty()
+                activeLyric.maxLines = 3
+            } else activeLyric.maxLines = 2
         } else {
-            val mediaActive = MediaBridge.current(this) != null
-            val notificationActive = NotificationStore.latest != null
-            expandedUntil = if (mediaActive || notificationActive) Long.MAX_VALUE else now + 1000L
-            animateOpen()
+            lyricsBlock.visibility = GONE
+            lyricsExpanded = false
+            timeRow.visibility = GONE
+            seekBar.visibility = GONE
+            controls.removeAllViews()
         }
-        refreshIsland()
-    }
 
-    override fun onGestureAction(action: String) {
-        when (action) {
-            "expand" -> onToggleExpanded()
-            "play_pause" -> MediaBridge.toggle(this)
-            "next_track" -> MediaBridge.next(this)
-            "previous_track" -> MediaBridge.previous(this)
-            "volume_up" -> (getSystemService(Context.AUDIO_SERVICE) as AudioManager)
-                .adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0)
-            "volume_down" -> (getSystemService(Context.AUDIO_SERVICE) as AudioManager)
-                .adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, 0)
-            "open_app" -> try {
-                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
-            } catch (_: Exception) { }
-            "none" -> Unit
-            else -> onToggleExpanded()
+        val notification = selectedNotification
+        notificationCard.visibility = if (expanded && notification != null && showNotificationText) VISIBLE else GONE
+        replyArea.visibility = if (expanded && notification != null && notification.canReply && showReply && replyArea.tag == "editing") VISIBLE else GONE
+        if (notification != null) {
+            val key = notification.key
+            if (key != lastNotificationKey) {
+                val accent = notificationAccent(notification.packageName)
+                notificationCard.background = notificationBackground(accent)
+                setAppIcon(notification.packageName, notificationIcon)
+                notificationIcon.contentDescription = appName(notification.packageName)
+                replyArea.tag = if (replyArea.tag == "editing" && notification.canReply) "editing" else ""
+                lastNotificationKey = key
+            }
+            notificationTitle.text = if (hideSensitive) "New notification" else notification.title.ifBlank { appName(notification.packageName) }
+            notificationBody.text = if (hideSensitive) "Message preview hidden" else notification.text.ifBlank { appName(notification.packageName) }
+            notificationPosition.text = if (notifications.size > 1) "${selectedIndex + 1}  /  ${notifications.size}" else "NEW MESSAGE"
+        } else {
+            lastNotificationKey = ""
+            replyArea.visibility = GONE
+            replyArea.tag = ""
         }
-        refreshIsland()
+
+        if (!expanded) {
+            replyArea.visibility = GONE
+            lyricsExpanded = false
+        }
+        val compactTop = dp(if (expanded) 11 else 5)
+        setPadding(dp(12), compactTop, dp(12), dp(if (expanded) 12 else 7))
     }
 
-    override fun onOutsideTouch() {
-        if (focusForReply) return
-        val isExpanded = System.currentTimeMillis() < expandedUntil
-        if (isExpanded && expandedUntil != Long.MAX_VALUE) {
-            expandedUntil = 0L
-            animateClose()
-            refreshIsland()
-        } else if (expandedUntil == Long.MAX_VALUE) {
-            expandedUntil = 0L
-            animateClose()
-            refreshIsland()
+    private fun rebuildControls(media: MediaSnapshot, showControls: Boolean, showLyrics: Boolean) {
+        controls.removeAllViews()
+        if (!showControls) return
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        controls.addView(glyphButton("⏮", "Previous", media.canPrevious) { MediaBridge.previous(context) }, weightedParams())
+        controls.addView(glyphButton(if (media.playing) "Ⅱ" else "▶", if (media.playing) "Pause" else "Play", media.canToggle, true) { MediaBridge.toggle(context) }, weightedParams())
+        controls.addView(glyphButton("⏭", "Next", media.canNext) { MediaBridge.next(context) }, weightedParams())
+        controls.addView(glyphButton("−", "Volume down") {
+            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, 0)
+        }, weightedParams())
+        controls.addView(glyphButton("+", "Volume up") {
+            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0)
+        }, weightedParams())
+        if (showLyrics) {
+            controls.addView(glyphButton(if (lyricsExpanded) "♫" else "♪", "Toggle lyrics", true) {
+                lyricsExpanded = !lyricsExpanded
+                lyricsBlock.visibility = if (lyricsExpanded) VISIBLE else GONE
+                lyricsBlock.alpha = 0.5f
+                lyricsBlock.animate().alpha(1f).setDuration(220L).start()
+                callbacks.onContentSizeChanged()
+            }, weightedParams())
         }
     }
 
-    override fun onNotificationHistoryChanged(index: Int) {
-        val count = NotificationStore.count()
-        notificationIndex = index.coerceIn(0, (count - 1).coerceAtLeast(0))
-        refreshIsland()
+    private fun weightedParams() = LayoutParams(0, dp(43), 1f).apply {
+        marginStart = dp(2)
+        marginEnd = dp(2)
     }
 
-    override fun onContentSizeChanged() {
-        refreshIsland()
+    fun showReplyEditor() {
+        if (selectedNotification?.canReply != true) return
+        replyArea.tag = "editing"
+        replyArea.visibility = VISIBLE
+        replyInput.requestFocus()
+        (context.getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)
+            ?.showSoftInput(replyInput, InputMethodManager.SHOW_IMPLICIT)
     }
 
-    override fun onDestroy() {
-        handler.removeCallbacksAndMessages(null)
-        resizeAnimator?.cancel()
-        try { islandView?.let { windowManager.removeView(it) } } catch (_: Exception) { }
-        islandView = null
-        layoutParams = null
-        AerisPrefs.setBool(this, "service_active", false)
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        super.onDestroy()
+    fun hideReplyEditor() {
+        replyArea.tag = ""
+        replyArea.visibility = GONE
+        replyInput.clearFocus()
     }
 
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        val view = islandView ?: return
-        val newParams = buildLayoutParams()
-        try {
-            layoutParams = newParams
-            windowManager.updateViewLayout(view, newParams)
-            refreshIsland()
-        } catch (_: Exception) { }
+    private fun makeLyricSpan(frame: dev.aeris.island.media.LyricsFrame?): CharSequence {
+        if (frame == null || frame.words.isEmpty()) return frame?.current.orEmpty()
+        val content = frame.words.joinToString(" ") { it.text }
+        val spannable = SpannableString(content)
+        var cursor = 0
+        frame.words.forEachIndexed { index, word ->
+            val start = cursor
+            val end = (start + word.text.length).coerceAtMost(content.length)
+            spannable.setSpan(ForegroundColorSpan(if (index <= frame.activeWordIndex) Color.WHITE else 0xFF9BA8B6.toInt()), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (index == frame.activeWordIndex && end > start) {
+                spannable.setSpan(BackgroundColorSpan(0x5566D7EE), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                spannable.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            cursor = end + 1
+        }
+        return spannable
+    }
+
+    private fun glyphButton(glyph: String, description: String, enabled: Boolean = true, primary: Boolean = false, action: () -> Unit): View {
+        val frame = FrameLayout(context).apply {
+            background = roundedBackground(
+                if (primary) 0xFFF3F7FA.toInt() else if (liquidGlass) 0x36FFFFFF else 0xFF1A222C.toInt(),
+                dp(if (primary) 17 else 13).toFloat()
+            )
+            alpha = if (enabled) 1f else 0.36f
+            isEnabled = enabled
+            isClickable = enabled
+            contentDescription = description
+            setOnClickListener { if (isEnabled) action() }
+            setPadding(dp(6), dp(4), dp(6), dp(4))
+        }
+        val label = TextView(context).apply {
+            text = glyph
+            textSize = if (primary) 19f else 17f
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setTextColor(if (primary) 0xFF071018.toInt() else Color.WHITE)
+            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        }
+        frame.addView(label, FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        return frame
+    }
+
+    private fun lyricText(size: Float, color: Int) = TextView(context).apply {
+        textSize = size
+        setTextColor(color)
+        maxLines = 1
+        ellipsize = TextUtils.TruncateAt.END
+        includeFontPadding = false
+    }
+
+    private fun pillBackground(accent: Int, glass: Boolean, radius: Int = 42) = GradientDrawable(
+        GradientDrawable.Orientation.TOP_BOTTOM,
+        if (glass) intArrayOf(
+            withAlpha(0xFF2A303A.toInt(), 0xB8),
+            withAlpha(blend(accent, 0xFF10141B.toInt(), 0.38f), 0xC8)
+        ) else intArrayOf(0xFF05070B.toInt(), blend(accent, 0xFF10151C.toInt(), 0.42f))
+    ).apply {
+        cornerRadius = dp(radius.coerceIn(18, 54)).toFloat()
+        setStroke(dp(1), if (glass) 0xBFFFFFFF.toInt() else 0xFF29313C.toInt())
+    }
+
+    private fun notificationBackground(accent: Int) = GradientDrawable(
+        GradientDrawable.Orientation.TOP_BOTTOM,
+        intArrayOf(blend(accent, 0xFF101820.toInt(), 0.66f), blend(accent, 0xFF0C1118.toInt(), 0.48f))
+    ).apply {
+        cornerRadius = dp(19).toFloat()
+        setStroke(dp(1), 0x55FFFFFF)
+    }
+
+    private fun roundedBackground(color: Int, radius: Float) = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = radius
+        setColor(color)
+        setStroke(dp(1), 0x25FFFFFF)
+    }
+
+    private fun imageShape(radius: Float) = GradientDrawable().apply {
+        shape = if (radius > 500f) GradientDrawable.OVAL else GradientDrawable.RECTANGLE
+        if (radius <= 500f) cornerRadius = radius
+        setColor(0xFF202832.toInt())
+    }
+
+    private fun sampleAccent(bitmap: Bitmap): Int {
+        return try {
+            val pixel = bitmap.getPixel((bitmap.width / 2).coerceIn(0, bitmap.width - 1), (bitmap.height / 2).coerceIn(0, bitmap.height - 1))
+            val r = Color.red(pixel).coerceIn(28, 230)
+            val g = Color.green(pixel).coerceIn(28, 230)
+            val b = Color.blue(pixel).coerceIn(28, 230)
+            blend(Color.rgb(r, g, b), 0xFF0C1118.toInt(), 0.25f)
+        } catch (_: Exception) { 0xFF79C9DA.toInt() }
+    }
+
+    private fun notificationAccent(packageName: String): Int = when {
+        packageName.contains("whatsapp", true) -> 0xFF20B86A.toInt()
+        packageName.contains("instagram", true) -> 0xFFB84F9A.toInt()
+        packageName.contains("youtube", true) -> 0xFFE53935.toInt()
+        packageName.contains("telegram", true) -> 0xFF2A9DDB.toInt()
+        packageName.contains("messenger", true) -> 0xFF3978E8.toInt()
+        packageName.contains("discord", true) -> 0xFF6875E8.toInt()
+        else -> 0xFF537D92.toInt()
+    }
+
+    private fun blend(foreground: Int, background: Int, amount: Float): Int {
+        val f = amount.coerceIn(0f, 1f)
+        return Color.rgb(
+            (Color.red(foreground) * f + Color.red(background) * (1f - f)).toInt(),
+            (Color.green(foreground) * f + Color.green(background) * (1f - f)).toInt(),
+            (Color.blue(foreground) * f + Color.blue(background) * (1f - f)).toInt()
+        )
+    }
+
+    private fun withAlpha(color: Int, alpha: Int): Int =
+        (color and 0x00FFFFFF) or ((alpha.coerceIn(0, 255) and 0xFF) shl 24)
+
+    private fun setAppIcon(packageName: String, target: ImageView) {
+        try { target.setImageDrawable(context.packageManager.getApplicationIcon(packageName)) }
+        catch (_: Exception) { target.setImageDrawable(null) }
+    }
+
+    private fun appName(packageName: String): String = try {
+        context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(packageName, 0)).toString()
+    } catch (_: Exception) { packageName.substringAfterLast('.') }
+
+    private fun formatTime(ms: Long): String {
+        if (ms <= 0L) return "00:00"
+        val seconds = ms / 1000L
+        return String.format(Locale.getDefault(), "%02d:%02d", seconds / 60, seconds % 60)
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+}
 
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    companion object {
-        const val ACTION_START = "dev.aeris.island.action.START"
-        const val ACTION_STOP = "dev.aeris.island.action.STOP"
-        const val NOTIFICATION_ID = 4310
-        private const val REFRESH_MS = 620L
+private class VisualizerStrip(context: Context) : View(context) {
+    private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFE1E8EE.toInt()
+        strokeWidth = dp(2f)
+        strokeCap = android.graphics.Paint.Cap.ROUND
     }
+    var isActive = false
+        set(value) { field = value; invalidate() }
+    var speed = 0.22f
+    private var phase = 0f
+
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        super.onDraw(canvas)
+        val count = 5
+        val gap = width.toFloat() / (count + 1)
+        for (i in 0 until count) {
+            val wave = if (isActive) abs(sin(phase + i * 0.78f)).toFloat() else 0.035f
+            val h = if (isActive) height * (0.18f + wave * 0.62f) else dp(2f)
+            val x = gap * (i + 1)
+            canvas.drawLine(x, (height - h) / 2f, x, (height + h) / 2f, paint)
+        }
+        if (isActive && visibility == VISIBLE && isAttachedToWindow) {
+            phase += speed
+            postInvalidateDelayed(58L)
+        }
+    }
+
+    private fun dp(value: Float) = value * resources.displayMetrics.density
+}
+
+
+/** Subtle optical highlights layered above the translucent surface in Liquid Glass mode. */
+private class GlassSheenDrawable(private val accent: Int) : Drawable() {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val shape = Path()
+    private val rect = RectF()
+    private var multiplier = 255
+    private var filter: ColorFilter? = null
+
+    override fun draw(canvas: Canvas) {
+        val b = bounds
+        if (b.width() <= 0 || b.height() <= 0) return
+        rect.set(b.left.toFloat(), b.top.toFloat(), b.right.toFloat(), b.bottom.toFloat())
+        shape.reset()
+        shape.addRoundRect(rect, rect.height() * 0.48f, rect.height() * 0.48f, Path.Direction.CW)
+        val save = canvas.save()
+        canvas.clipPath(shape)
+
+        paint.style = Paint.Style.FILL
+        paint.alpha = (0x54 * multiplier / 255).coerceIn(0, 255)
+        paint.shader = LinearGradient(
+            0f, rect.top, 0f, rect.top + rect.height() * 0.58f,
+            intArrayOf(0x72FFFFFF, 0x20FFFFFF, 0x00FFFFFF),
+            floatArrayOf(0f, 0.42f, 1f), Shader.TileMode.CLAMP
+        )
+        paint.colorFilter = filter
+        canvas.drawRect(rect, paint)
+
+        paint.shader = RadialGradient(
+            rect.left + rect.width() * 0.24f,
+            rect.top + rect.height() * 0.18f,
+            rect.width() * 0.62f,
+            intArrayOf(withAlpha(Color.WHITE, 0x40), withAlpha(accent, 0x16), 0x00000000),
+            floatArrayOf(0f, 0.42f, 1f), Shader.TileMode.CLAMP
+        )
+        canvas.drawRect(rect, paint)
+
+        paint.shader = null
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = (rect.height() * 0.012f).coerceAtLeast(1f)
+        paint.color = withAlpha(Color.WHITE, 0x58 * multiplier / 255)
+        paint.colorFilter = filter
+        canvas.drawRoundRect(rect.left + 1f, rect.top + 1f, rect.right - 1f, rect.bottom - 1f,
+            rect.height() * 0.48f, rect.height() * 0.48f, paint)
+
+        paint.strokeWidth = (rect.height() * 0.018f).coerceAtLeast(1f)
+        paint.color = withAlpha(Color.WHITE, 0x42 * multiplier / 255)
+        val bubbleY = rect.top + rect.height() * 0.20f
+        canvas.drawCircle(rect.left + rect.width() * 0.76f, bubbleY, rect.height() * 0.085f, paint)
+        canvas.drawCircle(rect.left + rect.width() * 0.84f, bubbleY + rect.height() * 0.035f, rect.height() * 0.035f, paint)
+
+        paint.style = Paint.Style.FILL
+        paint.shader = null
+        paint.colorFilter = null
+        canvas.restoreToCount(save)
+    }
+
+    override fun setAlpha(alpha: Int) { multiplier = alpha.coerceIn(0, 255); invalidateSelf() }
+    override fun setColorFilter(colorFilter: ColorFilter?) { filter = colorFilter; invalidateSelf() }
+    private fun withAlpha(color: Int, alpha: Int): Int =
+        (color and 0x00FFFFFF) or ((alpha.coerceIn(0, 255) and 0xFF) shl 24)
+
+    @Suppress("DEPRECATION")
+    override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
 }
