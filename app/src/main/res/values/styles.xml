@@ -1,10 +1,11 @@
 <resources>
-    <style name="Theme.Aeris" parent="android:style/Theme.Material.Light.NoActionBar">
+    <style name="Theme.Aeris" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#62DDF3</item>
+        <item name="android:navigationBarColor">#05070A</item>
+        <item name="android:statusBarColor">#05070A</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:statusBarColor">#080A0F</item>
-        <item name="android:navigationBarColor">#080A0F</item>
-        <item name="android:colorAccent">#C9B8F4</item>
         <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">#05070A</item>
     </style>
 </resources>
