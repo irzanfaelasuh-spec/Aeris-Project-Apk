@@ -9,147 +9,91 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
-/**
- * Fetches synced/plain lyrics from LRCLIB without blocking the UI/media polling thread.
- *
- * getOrFetch() returns a cached result immediately (or null while the first request runs).
- * MediaBridge is polled by the app, so a later poll picks up the downloaded lyrics.
- */
+/** Optional async LRCLIB lookup. Caller receives cached text immediately or null while fetching. */
 object LyricsProvider {
-    private const val API_BASE = "https://lrclib.net/api"
-    private const val CONNECT_TIMEOUT_MS = 7_000
-    private const val READ_TIMEOUT_MS = 7_000
-
-    private val executor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "AERIS-Lyrics").apply { isDaemon = true }
+    private const val BASE = "https://lrclib.net/api"
+    private val executor = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "AERIS-Lyrics").apply { isDaemon = true }
     }
     private val cache = ConcurrentHashMap<String, String>()
     private val inFlight = ConcurrentHashMap.newKeySet<String>()
 
     fun getOrFetch(title: String, artist: String, durationMs: Long): String? {
-        val cleanTitle = title.trim()
-        val cleanArtist = artist.trim()
-        if (cleanTitle.isBlank() || cleanArtist.isBlank() ||
-            cleanTitle.equals("Unknown track", ignoreCase = true)) return null
-
-        val key = cacheKey(cleanTitle, cleanArtist, durationMs)
+        val t = title.trim()
+        val a = artist.trim()
+        if (t.isBlank() || a.isBlank() || t.equals("Unknown track", true)) return null
+        val key = key(t, a, durationMs)
         cache[key]?.let { return it }
-
         if (inFlight.add(key)) {
             executor.execute {
-                try {
-                    val lyrics = fetch(cleanTitle, cleanArtist, durationMs)
-                    if (!lyrics.isNullOrBlank()) cache[key] = lyrics
-                } catch (_: Exception) {
-                    // A failed lookup must not crash the media service.
-                } finally {
-                    inFlight.remove(key)
-                }
+                try { fetch(t, a, durationMs)?.takeIf(String::isNotBlank)?.let { cache[key] = it } }
+                catch (_: Exception) { /* A lyrics lookup must never crash media polling. */ }
+                finally { inFlight.remove(key) }
             }
         }
         return null
     }
 
     private fun fetch(title: String, artist: String, durationMs: Long): String? {
-        val durationSeconds = durationMs / 1000.0
-        val exactUrl = "$API_BASE/get?track_name=${encode(title)}" +
-            "&artist_name=${encode(artist)}" +
-            if (durationMs > 0L) "&duration=$durationSeconds" else ""
-
-        lyricsFrom(requestObject(exactUrl))?.let { return it }
-
-        val searchUrl = "$API_BASE/search?track_name=${encode(title)}&artist_name=${encode(artist)}"
-        val results = requestArray(searchUrl) ?: return null
-        val normalizedTitle = normalize(title)
-        val normalizedArtist = normalize(artist)
-
-        val candidates = (0 until results.length()).mapNotNull { index ->
-            results.optJSONObject(index)
-        }
-
-        val best = candidates
-            .filter { item ->
-                item.optString("trackName").isNotBlank() &&
-                    item.optString("artistName").isNotBlank() &&
-                    (!item.optString("syncedLyrics").isNullOrBlank() ||
-                        !item.optString("plainLyrics").isNullOrBlank())
-            }
-            .maxByOrNull { item ->
+        val duration = durationMs / 1000.0
+        val exact = "$BASE/get?track_name=${encode(title)}&artist_name=${encode(artist)}" +
+            if (durationMs > 0L) "&duration=$duration" else ""
+        lyrics(requestObject(exact))?.let { return it }
+        val search = requestArray("$BASE/search?track_name=${encode(title)}&artist_name=${encode(artist)}") ?: return null
+        val targetTitle = normalize(title)
+        val targetArtist = normalize(artist)
+        val best = (0 until search.length()).mapNotNull(search::optJSONObject)
+            .filter { row -> lyrics(row) != null }
+            .maxByOrNull { row ->
                 var score = 0
-                val candidateTitle = normalize(item.optString("trackName"))
-                val candidateArtist = normalize(item.optString("artistName"))
-
-                if (candidateTitle == normalizedTitle) score += 5
-                else if (candidateTitle.contains(normalizedTitle) ||
-                    normalizedTitle.contains(candidateTitle)) score += 2
-
-                if (candidateArtist == normalizedArtist) score += 5
-                else if (candidateArtist.contains(normalizedArtist) ||
-                    normalizedArtist.contains(candidateArtist)) score += 2
-
-                val candidateDuration = (item.optDouble("duration", 0.0) * 1000).toLong()
-                if (durationMs > 0L && candidateDuration > 0L) {
-                    val difference = kotlin.math.abs(candidateDuration - durationMs)
-                    if (difference <= 5_000L) score += 3
-                    else if (difference <= 15_000L) score += 1
+                val candidateTitle = normalize(row.optString("trackName"))
+                val candidateArtist = normalize(row.optString("artistName"))
+                if (candidateTitle == targetTitle) score += 5
+                else if (candidateTitle.contains(targetTitle) || targetTitle.contains(candidateTitle)) score += 2
+                if (candidateArtist == targetArtist) score += 5
+                else if (candidateArtist.contains(targetArtist) || targetArtist.contains(candidateArtist)) score += 2
+                val candidateDuration = (row.optDouble("duration", 0.0) * 1000).toLong()
+                if (durationMs > 0 && candidateDuration > 0) {
+                    val diff = kotlin.math.abs(candidateDuration - durationMs)
+                    if (diff <= 5_000) score += 3 else if (diff <= 15_000) score += 1
                 }
-
-                if (!item.optString("syncedLyrics").isNullOrBlank()) score += 2
+                if (!row.optString("syncedLyrics").isNullOrBlank()) score += 2
                 score
             }
-
-        return lyricsFrom(best)
+        return lyrics(best)
     }
 
-    private fun lyricsFrom(json: JSONObject?): String? {
-        if (json == null) return null
-        return json.optString("syncedLyrics").takeIf { it.isNotBlank() }
-            ?: json.optString("plainLyrics").takeIf { it.isNotBlank() }
-    }
+    private fun lyrics(json: JSONObject?): String? = json?.optString("syncedLyrics")?.takeIf { it.isNotBlank() }
+        ?: json?.optString("plainLyrics")?.takeIf { it.isNotBlank() }
 
-    private fun requestObject(url: String): JSONObject? {
-        val connection = open(url)
+    private fun requestObject(address: String): JSONObject? {
+        val connection = open(address)
         return try {
-            if (connection.responseCode !in 200..299) return null
-            JSONObject(connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() })
-        } catch (_: Exception) {
-            null
-        } finally {
-            connection.disconnect()
-        }
+            if (connection.responseCode !in 200..299) null
+            else JSONObject(connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() })
+        } catch (_: Exception) { null } finally { connection.disconnect() }
     }
 
-    private fun requestArray(url: String): JSONArray? {
-        val connection = open(url)
+    private fun requestArray(address: String): JSONArray? {
+        val connection = open(address)
         return try {
-            if (connection.responseCode !in 200..299) return null
-            JSONArray(connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() })
-        } catch (_: Exception) {
-            null
-        } finally {
-            connection.disconnect()
-        }
+            if (connection.responseCode !in 200..299) null
+            else JSONArray(connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() })
+        } catch (_: Exception) { null } finally { connection.disconnect() }
     }
 
-    private fun open(url: String): HttpURLConnection =
-        (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = READ_TIMEOUT_MS
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "AERIS-Android/2.0 (lyrics lookup)")
-        }
+    private fun open(address: String): HttpURLConnection = (URL(address).openConnection() as HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 7_000
+        readTimeout = 7_000
+        setRequestProperty("Accept", "application/json")
+        setRequestProperty("User-Agent", "AERIS-Android/3.0 (optional lyrics lookup)")
+    }
 
-    private fun encode(value: String): String =
-        URLEncoder.encode(value, "UTF-8")
-
-    private fun normalize(value: String): String =
-        value.lowercase(Locale.ROOT)
-            .replace(Regex("\\([^)]*\\)|\\[[^]]*\\]"), " ")
-            .replace(Regex("[^\\p{L}\\p{N}]"), " ")
-            .replace(Regex("\\s+"), " ")
-            .trim()
-
-    private fun cacheKey(title: String, artist: String, durationMs: Long): String =
-        "${normalize(title)}|${normalize(artist)}|${durationMs / 5_000L}"
+    private fun encode(value: String) = URLEncoder.encode(value, "UTF-8")
+    private fun normalize(value: String) = value.lowercase(Locale.ROOT)
+        .replace(Regex("\\([^)]*\\)|\\[[^]]*\\]"), " ")
+        .replace(Regex("[^\\p{L}\\p{N}]"), " ")
+        .replace(Regex("\\s+"), " ").trim()
+    private fun key(title: String, artist: String, duration: Long) = "${normalize(title)}|${normalize(artist)}|${duration / 5_000L}"
 }
