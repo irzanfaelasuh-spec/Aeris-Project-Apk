@@ -1,138 +1,134 @@
 package dev.aeris.island.overlay
 
+import android.animation.ValueAnimator
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowManager
-import android.content.Context
-import android.content.pm.ServiceInfo
+import android.view.animation.DecelerateInterpolator
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import dev.aeris.island.AerisApp
 import dev.aeris.island.AerisPrefs
 import dev.aeris.island.MainActivity
 import dev.aeris.island.R
 import dev.aeris.island.media.MediaBridge
-import dev.aeris.island.media.MediaSnapshot
+import dev.aeris.island.notifications.AerisNotificationListener
 import dev.aeris.island.notifications.NotificationSnapshot
 import dev.aeris.island.notifications.NotificationStore
-import dev.aeris.island.notifications.AerisNotificationListener
+import java.util.function.Consumer
 
 class IslandService : Service(), PillOverlayView.Callbacks {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var windowManager: WindowManager
-    private var islandView: PillOverlayView? = null
-    private var layoutParams: WindowManager.LayoutParams? = null
-    private var lastMediaKey = ""
-    private var lastNotificationSignature = ""
+    private var island: PillOverlayView? = null
+    private var params: WindowManager.LayoutParams? = null
+    private var animator: ValueAnimator? = null
     private var expandedUntil = 0L
-    private var focusForReply = false
-    private var introAnimationUntil = 0L
+    private var pinnedExpanded = false
+    private var lyricsExpanded = false
+    private var historyIndex = 0
+    private var lastMediaSignature = ""
+    private var lastNotificationSignature = ""
+    private var selectedNotificationKey: String? = null
+    private var recordingVisible = false
+    private var recordingCallback: Consumer<Int>? = null
 
-    private val refreshTask = object : Runnable {
+    private val tick = object : Runnable {
         override fun run() {
-            refreshIsland()
-            val nextDelay = if (AerisPrefs.bool(this@IslandService, "low_power", false)) 1600L else REFRESH_MS
-            handler.postDelayed(this, nextDelay)
+            refresh()
+            handler.postDelayed(this, if (AerisPrefs.bool(this@IslandService, "low_power", false)) 1400L else 450L)
         }
     }
 
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        (application as? AerisApp)?.ensureNotificationChannel()
+        createChannel()
+        registerRecordingCallback()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            ACTION_START, null -> Unit
-            else -> Unit
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
         }
-
-        startAsForeground()
-        AerisPrefs.setBool(this, "service_active", true)
         if (!Settings.canDrawOverlays(this)) {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (!AerisPrefs.islandEnabled(this)) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        startAsForeground()
+        AerisPrefs.setBool(this, "service_active", true)
         attachIsland()
-        handler.removeCallbacks(refreshTask)
-        handler.post(refreshTask)
+        handler.removeCallbacks(tick)
+        handler.post(tick)
         return START_STICKY
+    }
+
+    private fun createChannel() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "AERIS status", NotificationManager.IMPORTANCE_LOW))
+        }
     }
 
     private fun startAsForeground() {
         val openApp = PendingIntent.getActivity(
-            this,
-            10,
-            Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            },
+            this, 1, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val notification = NotificationCompat.Builder(this, AerisApp.CHANNEL_ID)
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_status)
             .setContentTitle("AERIS is active")
-            .setContentText("The interactive island overlay is running.")
+            .setContentText("Media and notification island is running.")
             .setContentIntent(openApp)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
-
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-        } else 0
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
-    }
-
-    private fun attachIsland() {
-        if (islandView != null || !Settings.canDrawOverlays(this)) return
-        val view = PillOverlayView(this, this)
-        val params = buildLayoutParams()
-        try {
-            view.alpha = 0f
-            view.translationY = -dp(7).toFloat()
-            view.scaleX = 0.97f
-            view.scaleY = 0.97f
-            windowManager.addView(view, params)
-            islandView = view
-            layoutParams = params
-            introAnimationUntil = SystemClock.uptimeMillis() + 360L
-            view.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)
-                .setDuration(360L).setInterpolator(android.view.animation.DecelerateInterpolator()).start()
-        } catch (_: Exception) {
-            islandView = null
-            layoutParams = null
+        if (Build.VERSION.SDK_INT >= 34) {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
         }
     }
 
-    private fun buildLayoutParams(): WindowManager.LayoutParams {
-        val screenWidthDp = (resources.displayMetrics.widthPixels / resources.displayMetrics.density).toInt()
-        val maxWidthDp = (screenWidthDp - 20).coerceAtLeast(140)
-        val width = dp(minOf(AerisPrefs.int(this, "island_width", 188), maxWidthDp))
-        val height = dp(AerisPrefs.int(this, "island_height", 43))
-        val y = dp(AerisPrefs.int(this, "island_y", 8))
+    private fun attachIsland() {
+        if (island != null || !Settings.canDrawOverlays(this)) return
+        val view = PillOverlayView(this, this)
+        val lp = buildParams()
+        try {
+            view.alpha = 0f
+            view.translationY = -dp(7).toFloat()
+            view.scaleX = .96f
+            view.scaleY = .96f
+            windowManager.addView(view, lp)
+            island = view
+            params = lp
+            view.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)
+                .setDuration(420L).setInterpolator(DecelerateInterpolator()).start()
+        } catch (_: Exception) {
+            island = null
+            params = null
+        }
+    }
+
+    private fun buildParams(): WindowManager.LayoutParams {
+        val screenWidth = (resources.displayMetrics.widthPixels / resources.displayMetrics.density).toInt()
+        val width = minOf(AerisPrefs.int(this, "collapsed_width", 190), (screenWidth - 22).coerceAtLeast(145))
         return WindowManager.LayoutParams(
-            width,
-            height,
+            dp(width), dp(AerisPrefs.int(this, "collapsed_height", 46)),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
@@ -140,177 +136,199 @@ class IslandService : Service(), PillOverlayView.Callbacks {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            x = 0
-            this.y = y
-            windowAnimations = android.R.style.Animation_Toast
+            y = dp(AerisPrefs.int(this@IslandService, "top_offset", 10))
         }
     }
 
-    private fun refreshIsland() {
-        if (!Settings.canDrawOverlays(this)) {
-            stopSelf()
-            return
+    private fun refresh() {
+        if (!Settings.canDrawOverlays(this)) { stopSelf(); return }
+        if (island == null) attachIsland()
+        val view = island ?: return
+        val media = if (AerisPrefs.bool(this, "music_enabled", true)) MediaBridge.current(this) else null
+        val history = if (AerisPrefs.bool(this, "notifications_enabled", true)) NotificationStore.recent() else emptyList()
+        val newest = history.firstOrNull()
+        val mediaSignature = media?.let { "${it.packageName}|${it.title}|${it.artist}|${it.playing}" }.orEmpty()
+        if (mediaSignature.isNotBlank() && mediaSignature != lastMediaSignature) {
+            if (AerisPrefs.bool(this, "auto_expand_music", true)) peek(AerisPrefs.int(this, "expand_seconds", 8).coerceIn(2, 30))
+            lastMediaSignature = mediaSignature
         }
-        if (!AerisPrefs.islandEnabled(this)) {
-            stopSelf()
-            return
-        }
-        if (islandView == null) attachIsland()
-        val view = islandView ?: return
-
-        val mediaEnabled = AerisPrefs.bool(this, "music_enabled", true)
-        val notificationsEnabled = AerisPrefs.bool(this, "notifications_enabled", true)
-        val media = if (mediaEnabled) MediaBridge.current(this) else null
-        val notification = if (notificationsEnabled) NotificationStore.latest else null
-        val mediaKey = media?.let { "${it.packageName}|${it.title}|${it.artist}|${it.playing}" }.orEmpty()
-        if (mediaKey.isNotBlank() && mediaKey != lastMediaKey && AerisPrefs.bool(this, "auto_expand_music", true)) {
-            requestTimedExpansion()
-        }
-        lastMediaKey = mediaKey
-
-        val notificationSignature = notification?.let { "${it.key}|${it.receivedAt}" }.orEmpty()
-        if (notificationSignature.isNotBlank() && notificationSignature != lastNotificationSignature &&
-            AerisPrefs.bool(this, "auto_expand_notifications", true)) {
+        val notificationSignature = newest?.let { "${it.key}|${it.receivedAt}" }.orEmpty()
+        if (notificationSignature.isNotBlank() && notificationSignature != lastNotificationSignature) {
             lastNotificationSignature = notificationSignature
-            requestTimedExpansion()
+            historyIndex = 0
+            if (AerisPrefs.bool(this, "auto_expand_notifications", true)) {
+                peek(AerisPrefs.int(this, "notification_peek_seconds", 2).coerceIn(2, 8))
+            }
         }
+        historyIndex = historyIndex.coerceIn(0, (history.size - 1).coerceAtLeast(0))
+        val notification: NotificationSnapshot? = history.getOrNull(historyIndex)
+        selectedNotificationKey = notification?.key
 
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         if (landscape && !AerisPrefs.bool(this, "landscape_enabled", true)) {
             view.visibility = android.view.View.GONE
             return
-        } else {
-            view.visibility = android.view.View.VISIBLE
         }
-        val idle = media == null && notification == null
-        val baseOpacity = AerisPrefs.int(this, "island_opacity", 100).coerceIn(60, 100) / 100f
-        if (SystemClock.uptimeMillis() >= introAnimationUntil) {
-            view.alpha = if (idle && AerisPrefs.bool(this, "fade_when_idle", false)) minOf(baseOpacity, 0.72f) else baseOpacity
+        view.visibility = android.view.View.VISIBLE
+        val expanded = pinnedExpanded || System.currentTimeMillis() < expandedUntil
+        view.update(media, notification, expanded, historyIndex, history.size, recordingVisible)
+
+        val screenWidthDp = (resources.displayMetrics.widthPixels / resources.displayMetrics.density).toInt()
+        val hasActivity = media != null || notification != null || recordingVisible
+        val desiredWidth = when {
+            !expanded -> AerisPrefs.int(this, "collapsed_width", 190)
+            !hasActivity -> 236
+            else -> AerisPrefs.int(this, "expanded_width", 350)
         }
-        val showExpanded = focusForReply || System.currentTimeMillis() < expandedUntil
-        view.updateContent(
-            media = media,
-            notification = notification,
-            expanded = showExpanded,
-            hideSensitive = AerisPrefs.bool(this, "hide_sensitive", false),
-            showArtwork = AerisPrefs.bool(this, "show_artwork", true),
-            showVisualizer = AerisPrefs.bool(this, "visualizer_enabled", true) && !AerisPrefs.bool(this, "reduce_motion", false),
-            showMediaControls = AerisPrefs.bool(this, "media_controls", true),
-            showNotificationText = AerisPrefs.bool(this, "notification_preview", true),
-            showReply = AerisPrefs.bool(this, "quick_reply", true),
-            showTrackState = AerisPrefs.bool(this, "show_track_state", true),
-            showSourceApp = AerisPrefs.bool(this, "show_source_app", false),
-            cornerRadius = AerisPrefs.int(this, "corner_radius", 40),
-            visualizerSpeed = AerisPrefs.int(this, "animation_speed", 100),
-            showLyrics = AerisPrefs.bool(this, "lyrics_enabled", true),
-            notificationCount = NotificationStore.count()
-        )
-        updateLayoutForCurrentMode(showExpanded, media, notification)
+        val width = dp(desiredWidth.coerceAtMost((screenWidthDp - 20).coerceAtLeast(145)))
+        val desiredHeight = if (!expanded) AerisPrefs.int(this, "collapsed_height", 46) else when {
+            !hasActivity -> 88
+            media != null && lyricsExpanded && notification != null -> 440
+            media != null && lyricsExpanded -> 395
+            media != null && notification != null -> 350
+            media != null -> 285
+            notification != null -> 195
+            else -> 120
+        }
+        val screenHeightDp = (resources.displayMetrics.heightPixels / resources.displayMetrics.density).toInt()
+        val height = dp(desiredHeight.coerceAtMost((screenHeightDp - 72).coerceAtLeast(170)))
+        updateBlur(expanded)
+        animateTo(width, height)
     }
 
-    private fun requestTimedExpansion() {
-        if (!AerisPrefs.bool(this, "auto_collapse", true)) {
-            expandedUntil = Long.MAX_VALUE
+    private fun peek(seconds: Int) {
+        pinnedExpanded = false
+        expandedUntil = System.currentTimeMillis() + seconds.coerceIn(1, 30) * 1000L
+    }
+
+    private fun updateBlur(expanded: Boolean) {
+        val lp = params ?: return
+        if (Build.VERSION.SDK_INT >= 31) {
+            val enabled = expanded && AerisPrefs.bool(this, "liquid_glass", false) &&
+                try { windowManager.isCrossWindowBlurEnabled } catch (_: Exception) { false }
+            lp.flags = if (enabled) lp.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
+                else lp.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv()
+            try { lp.setBlurBehindRadius(if (enabled) dp(20) else 0) } catch (_: Exception) { }
+            lp.dimAmount = if (enabled) .06f else 0f
+        }
+    }
+
+    private fun animateTo(width: Int, height: Int) {
+        val lp = params ?: return
+        val view = island ?: return
+        if (lp.width == width && lp.height == height) {
+            try { windowManager.updateViewLayout(view, lp) } catch (_: Exception) { }
             return
         }
-        val seconds = AerisPrefs.int(this, "expand_seconds", 10).coerceIn(3, 30)
-        expandedUntil = System.currentTimeMillis() + seconds * 1000L
-    }
-
-    private fun updateLayoutForCurrentMode(expanded: Boolean, media: MediaSnapshot?, notification: NotificationSnapshot?) {
-        val view = islandView ?: return
-        val current = layoutParams ?: return
-        val screenWidthDp = (resources.displayMetrics.widthPixels / resources.displayMetrics.density).toInt()
-        val maxWidthDp = (screenWidthDp - 20).coerceAtLeast(140)
-        val requestedWidth = if (expanded) AerisPrefs.int(this, "expanded_width", 330)
-            else AerisPrefs.int(this, "island_width", 188)
-        val width = minOf(requestedWidth, maxWidthDp)
-        val height = if (expanded) {
-            when {
-                media != null && notification != null -> 262
-                media != null -> 222
-                notification != null -> 156
-                else -> 104
+        animator?.cancel()
+        val fromWidth = lp.width
+        val fromHeight = lp.height
+        animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = if (AerisPrefs.bool(this@IslandService, "reduce_motion", false)) 170L else 390L
+            interpolator = DecelerateInterpolator(1.7f)
+            addUpdateListener { value ->
+                val fraction = value.animatedValue as Float
+                lp.width = (fromWidth + (width - fromWidth) * fraction).toInt()
+                lp.height = (fromHeight + (height - fromHeight) * fraction).toInt()
+                try { windowManager.updateViewLayout(view, lp) } catch (_: Exception) { }
             }
-        } else AerisPrefs.int(this, "island_height", 43)
-        val newWidth = dp(width.coerceAtLeast(140))
-        val resolvedHeight = if (focusForReply) 282 else height
-        val newHeight = dp(resolvedHeight)
-        if (current.width != newWidth || current.height != newHeight) {
-            current.width = newWidth
-            current.height = newHeight
-            try { windowManager.updateViewLayout(view, current) } catch (_: Exception) { }
+            start()
         }
     }
 
-    override fun onReplyRequested() {
-        focusForReply = true
-        val params = layoutParams ?: return
-        params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+    override fun toggleExpanded() {
+        val idle = MediaBridge.current(this) == null && NotificationStore.latest == null && !recordingVisible
+        when {
+            pinnedExpanded -> { pinnedExpanded = false; expandedUntil = 0L }
+            System.currentTimeMillis() < expandedUntil -> { expandedUntil = 0L; pinnedExpanded = false }
+            idle -> peek(1)
+            else -> { pinnedExpanded = true; expandedUntil = 0L }
+        }
+        refresh()
+    }
+
+    override fun browseNotifications(direction: Int) {
+        val count = NotificationStore.recent().size
+        if (count < 2) return
+        historyIndex = (historyIndex + direction).mod(count)
+        pinnedExpanded = true
+        expandedUntil = 0L
+        refresh()
+    }
+
+    override fun dismissNotification() {
+        val key = selectedNotificationKey ?: return
+        if (AerisNotificationListener.dismiss(key)) NotificationStore.remove(key)
+        historyIndex = 0
+        refresh()
+    }
+
+    override fun replyRequested() {
+        val lp = params ?: return
+        lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
         try {
-            islandView?.let {
-                params.height = dp(282)
-                windowManager.updateViewLayout(it, params)
-                it.showReplyEditor()
+            island?.let { view ->
+                windowManager.updateViewLayout(view, lp)
+                animateTo(lp.width, dp(310))
+                view.showReplyEditor()
             }
         } catch (_: Exception) { }
     }
 
-    override fun onDismissNotification() {
-        val key = NotificationStore.latest?.key ?: return
-        if (AerisNotificationListener.dismissNotification(key)) NotificationStore.remove(key)
+    override fun replyFinished() {
+        val lp = params ?: return
+        lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        island?.hideReplyEditor()
+        try { island?.let { windowManager.updateViewLayout(it, lp) } } catch (_: Exception) { }
+        refresh()
     }
 
-    override fun onReplyFinished() {
-        focusForReply = false
-        val params = layoutParams ?: return
-        params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+    override fun lyricsExpandedChanged(expanded: Boolean) {
+        lyricsExpanded = expanded
+        refresh()
+    }
+
+    private fun registerRecordingCallback() {
+        if (Build.VERSION.SDK_INT < 35) return
         try {
-            islandView?.let { view ->
-                view.hideReplyEditor()
-                windowManager.updateViewLayout(view, params)
+            val callback = Consumer<Int> { state ->
+                recordingVisible = state == WindowManager.SCREEN_RECORDING_STATE_VISIBLE
+                refresh()
             }
-        } catch (_: Exception) { }
+            recordingCallback = callback
+            val current = windowManager.addScreenRecordingCallback(mainExecutor, callback)
+            recordingVisible = current == WindowManager.SCREEN_RECORDING_STATE_VISIBLE
+        } catch (_: Exception) { recordingVisible = false }
     }
 
-    override fun onToggleExpanded() {
-        expandedUntil = if (System.currentTimeMillis() < expandedUntil) 0L
-            else if (!AerisPrefs.bool(this, "auto_collapse", true)) Long.MAX_VALUE
-            else System.currentTimeMillis() + AerisPrefs.int(this, "expand_seconds", 10).coerceIn(3, 30) * 1000L
-        refreshIsland()
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val view = island ?: return
+        val next = buildParams()
+        try { params = next; windowManager.updateViewLayout(view, next); refresh() } catch (_: Exception) { }
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        try {
-            islandView?.let { windowManager.removeView(it) }
-        } catch (_: Exception) { }
-        islandView = null
-        layoutParams = null
+        animator?.cancel()
+        if (Build.VERSION.SDK_INT >= 35) {
+            try { recordingCallback?.let { windowManager.removeScreenRecordingCallback(it) } } catch (_: Exception) { }
+        }
+        try { island?.let { windowManager.removeView(it) } } catch (_: Exception) { }
+        island = null
+        params = null
         AerisPrefs.setBool(this, "service_active", false)
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        val view = islandView ?: return
-        val newParams = buildLayoutParams()
-        try {
-            layoutParams = newParams
-            windowManager.updateViewLayout(view, newParams)
-            refreshIsland()
-        } catch (_: Exception) { }
-    }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
         const val ACTION_START = "dev.aeris.island.action.START"
         const val ACTION_STOP = "dev.aeris.island.action.STOP"
-        const val NOTIFICATION_ID = 4310
-        private const val REFRESH_MS = 850L
+        private const val CHANNEL_ID = "aeris_v3_status"
+        private const val NOTIFICATION_ID = 4310
     }
 }
