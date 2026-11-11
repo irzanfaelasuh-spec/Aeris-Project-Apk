@@ -1,65 +1,57 @@
-# AERIS V2 feature status
+# AERIS V3 — feature status and verification
 
-This file separates code that has been added from behavior that still depends on Android, the active media app, or on-device verification. `IMPLEMENTED IN SOURCE` is not the same as `BUILD VERIFIED` or `DEVICE TESTED`.
+Status labels below distinguish source implementation from device/OS behavior that still needs testing.
 
-## Added or updated in V2 source
-
-| Feature | Source status | Verification still needed |
+| Feature | V3 source state | Caveat / required test |
 |---|---|---|
-| Native AERIS V2 splash | Implemented in source | Check motion and spacing on the target phone |
-| Verification / permission checklist | Retained from V1 | Re-test every Android settings deep link |
-| Shizuku bridge | Retained as optional integration | Test connected, authorized, denied, and not-installed states |
-| Dynamic Island overlay | Retained and updated | Test overlay lifecycle and OEM restrictions |
-| Idle eye mascot | Implemented in source; replaces idle AERIS text | Test eye movement, blink, touch and reduced-motion behavior |
-| Rounded album artwork | Implemented in source | Test Spotify and other players' artwork |
-| Active media-session selection | Improved in source | Test with Spotify and multiple simultaneous media sessions |
-| Previous / Next | Capability-aware in source | Works only when the active session advertises the action |
-| Play / Pause | Implemented in source | Test with each target media player |
-| Seek timeline and elapsed / total time | Implemented in source | Requires `ACTION_SEEK_TO` and accurate playback state from player |
-| Skip back / forward 10 seconds | Implemented in source | Requires seek support from player |
-| Volume up / down | Implemented in source | Uses Android music stream volume |
-| Player custom actions | Implemented in source | Shuffle / repeat / like appear only if the player publishes such actions |
-| Lyrics panel in the pill | Implemented in source | Requires lyrics text exposed by media metadata |
-| Enhanced LRC word highlighting | Implemented in source | Requires per-word timestamps in enhanced LRC supplied by the player |
-| Standard LRC line highlighting | Implemented in source | Requires line-timestamped LRC supplied by the player |
-| Plain lyric preview | Implemented in source | No synchronized movement without timestamps |
-| Notification queue (up to 8 in memory) | Implemented in source | Test notification churn and listener reconnection |
-| Notification quick reply | Retained and expanded | Requires a valid free-form Android `RemoteInput` action |
-| Notification dismiss | Implemented in source | Dismisses the Android notification only; does not delete a WhatsApp message |
-| Notification privacy | Retained | Test hidden previews throughout all screens |
-| Stopwatch and countdown | Retained from V1 | Test timer behavior while app is backgrounded |
-| Settings / layout controls | Retained from V1; lyrics toggle added | Test persisted preferences after upgrade |
-| Foreground service and boot receiver | Retained | Background start remains subject to Android/OEM policy |
-| GitHub Actions | Retained and should build V2 debug APK | Actual CI build is still required |
+| Four-second V3 splash | Implemented | Check first launch and upgrade launch on device |
+| Compact idle island without eyes | Implemented | Verify top offset around the device camera/cutout |
+| Music compact / expanded layout | Implemented | Verify Spotify and another media app |
+| Album-art-derived lower gradient | Implemented | Artwork center pixel supplies an accent approximation, not full album palette extraction |
+| Static bars when paused / no active session | Implemented | Verify the source app publishes a sensible playback state |
+| Timeline and media controls | Implemented | Seek / previous / next only when advertised by the player |
+| Lyrics panel toggle and fallback note symbol | Implemented | Source must publish lyrics metadata; no remote lyric lookup |
+| LRC / enhanced LRC parsing | Retained | Enhanced timestamps required for word karaoke |
+| Notification app icon and app-specific accent | Implemented | App icons / package names vary by OEM and installed app |
+| Notification card + up to eight recent items | Implemented in memory | Recent snapshots stay in history after shade dismissal; cleared when process dies |
+| Swipe / arrow notification history navigation | Implemented in source | Validate gesture feel; an older item's reply may stop working if Android cancels its original PendingIntent |
+| RemoteInput quick reply | Implemented | Only compatible free-form text actions work |
+| Notification dismiss | Implemented | Dismisses system notification only, never original chat message |
+| Auto notification preview | Implemented, 2-second default | Adjustable in Settings; test notification rate and timing |
+| Liquid Glass app palette | Implemented | Translucent surface, optical highlights and bubble-like reflections; not a pixel-identical iOS clone |
+| Blur-behind request | Implemented on Android 12+ | Requires device support and runtime cross-window blur; fallback otherwise |
+| Tap / double tap / long-press shortcuts | Implemented | Test gesture recognition with all controls and screen readers |
+| Outside-touch collapse | Implemented using `FLAG_WATCH_OUTSIDE_TOUCH` | OEM / window policy may affect `ACTION_OUTSIDE` delivery |
+| Portrait / landscape sizing | Implemented | Needs physical device testing, especially split-screen / keyboard |
+| Optional Shizuku | Retained | Not required by core features; permission path needs test |
+| Recording detection | Not implemented universally | Android does not provide a reliable global recorder-session feed to ordinary apps |
+| Permanent notification history | Not implemented | Intentionally RAM-only for privacy |
 
-## Important limitations
+## Verification completed in this workspace
 
-- AERIS does not scrape lyrics from streaming services or bundle copyrighted song lyrics. It displays text the active player explicitly exposes through its Android media session. Spotify may not expose lyrics to third-party apps, so the lyrics panel can report that the source player does not provide them.
-- Word-by-word karaoke highlighting is exact only when the exposed data contains enhanced LRC word timestamps. Ordinary LRC can only highlight by line. Plain text is shown without pretending to be synchronized.
-- Previous, Next, seek, and app-specific controls depend on the active media session's advertised capabilities. Unsupported actions are disabled rather than faked.
-- Shuffle, repeat, favorite, and queue are not universal MediaSession actions. V2 displays custom media actions only when the source player publishes them.
-- Notification reply only works when the original notification contains a free-form `RemoteInput` action. Dismiss removes the Android notification only; it cannot delete or unsend a message in WhatsApp or another chat app.
-- Notification history is an in-memory queue of up to eight recent notifications. It is not persisted to disk and is cleared when the process ends.
-- Shizuku remains optional. The current bridge detects connection / requests permission; it does not run arbitrary privileged commands.
-- Android can block overlays above secure or immersive apps, stop background services, or restrict auto-start. AERIS cannot bypass those platform rules.
-- This work has passed source-level structural checks and standalone LyricsEngine compilation only. Full Android Gradle compilation, GitHub Actions, and physical device testing have not yet been run in this environment.
+- [x] ZIP extracted and source tree inspected.
+- [x] V2 workflow filename mismatch identified and corrected (`android.xml` → `android.yml`).
+- [x] XML parsing and project structural checks run after V3 updates (see the final CI note in the handoff).
+- [ ] Android Gradle compilation.
+- [ ] JUnit execution under Gradle.
+- [ ] Installation / runtime test on Android 15 device.
 
-## Next verification sequence
+## Device test checklist
 
-1. Run `.github/workflows/android.yml` on GitHub Actions and download the `AERIS-V2-debug-apk` artifact.
-2. Install on the target Android 15 device; verify first-run Verification, Shizuku optional status, overlay permission, and notification access.
-3. Test Spotify: session selection, Previous / Next, play/pause, seek scrubber, volume, album corners, lyrics data availability, and idle mascot after media stops.
-4. Test WhatsApp: notification preview privacy, RemoteInput reply, dismiss notification, and simultaneous notifications while music continues.
-5. Check portrait / landscape, touch targets, app switching, background service stability, and battery use.
+1. Enable overlay permission and start AERIS. Confirm the compact island is centered and does not cover the camera/cutout or status icons.
+2. Leave media stopped: idle capsule must have no eyes and no animated waveform. Start Spotify: artwork/title/artist appear; playing bars animate. Pause: bars freeze.
+3. Tap the island. Confirm expansion is smooth and remains open until an outside touch. Test the 1-second idle expansion separately.
+4. Open Lyrics. Check unavailable metadata shows the music-note fallback, ordinary LRC follows lines, and enhanced LRC highlights words.
+5. Send multiple WhatsApp / Instagram / YouTube notifications. Check icon, title, body, app accent, two-second preview, swipe history, reply, and dismiss.
+6. Reply from an older notification in history. Verify the exact original app thread receives it.
+7. Enable Liquid Glass. Test Android 12+ blur; toggle airplane mode, battery saver, and any OEM blur setting to verify fallback.
+8. Test every gesture shortcut: single tap, double tap, press-and-hold. Make sure controls remain reachable and gestures do not trigger accidentally.
+9. Rotate to landscape, open keyboard for reply, and test narrow screen width.
+10. Reboot. Confirm auto-start only if the user enabled it and the OEM permits background start.
 
+## Known design choices
 
-## Ideas retained as a future V2.x backlog (not implemented in this source snapshot)
-
-These ideas were discussed during planning and are recorded so they are not lost. They are deliberately not shown as working controls until their Android APIs, permissions, and device behavior are implemented and tested.
-
-- Smart queue modes / separate activity cards for calls, notifications, and music. Current V2 keeps media controls and the newest notification in one expanded island, plus an eight-item notification queue.
-- Clipboard preview and clipboard history. Requires an explicit privacy design and Android clipboard access rules.
-- Weather pill and navigation pill. Requires a reliable provider / location or navigation handoff; no location permission is requested in V2.
-- Focus mode, translation preview, reminder pill, and app shortcuts. These need their own UI and behavior design.
-- Deeper gaming mode, FPS, CPU temperature, thermal state, and advanced memory telemetry. Some metrics are OEM / API restricted and must not be simulated.
-- Additional media features such as A/B repeat, sleep timer, playback-speed control, audio-output picker, and queue browsing. These require support from the active player or dedicated Android audio APIs.
+- V3 removes the V2 idle-eye mascot completely.
+- The compact album image is circular; expanded artwork is rounded-square.
+- Notification dismiss does not attempt to delete the source message because Android's notification listener API cannot safely provide that capability.
+- The visualizer is a smooth playback-state waveform, not a microphone/audio-capture spectrum analyzer. Live audio amplitude would need a separate audio-capture permission/architecture and is not silently enabled.
