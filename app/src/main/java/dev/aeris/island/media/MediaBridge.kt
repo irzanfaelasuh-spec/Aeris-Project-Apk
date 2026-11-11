@@ -46,13 +46,22 @@ object MediaBridge {
             } else rawPosition
             val position = if (duration > 0L) advancedPosition.coerceIn(0L, duration) else advancedPosition
             val actions = state?.actions ?: 0L
+            val title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)
+                ?.takeIf { it.isNotBlank() } ?: "Unknown track"
+            val artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                ?.takeIf { it.isNotBlank() } ?: controller.packageName
             val textLyrics = metadata?.getText(LYRICS_KEY)?.toString()
                 ?: metadata?.getText("lyrics")?.toString()
                 ?: state?.extras?.getCharSequence(LYRICS_KEY)?.toString()
                 ?: state?.extras?.getCharSequence("lyrics")?.toString()
+            // Use lyrics exposed by the player first. If unavailable, fetch them
+            // asynchronously from the existing LRCLIB provider; a later media
+            // refresh will pick up the provider's cached result.
+            val lyrics = textLyrics?.takeIf { it.isNotBlank() }
+                ?: LyricsProvider.getOrFetch(title, artist, duration)
             MediaSnapshot(
-                title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)?.takeIf { it.isNotBlank() } ?: "Unknown track",
-                artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST)?.takeIf { it.isNotBlank() } ?: controller.packageName,
+                title = title,
+                artist = artist,
                 album = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM).orEmpty(),
                 packageName = controller.packageName,
                 playing = isPlaying(state?.state),
@@ -60,7 +69,7 @@ object MediaBridge {
                 positionMs = position,
                 artwork = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
                     ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART),
-                lyrics = textLyrics?.takeIf { it.isNotBlank() },
+                lyrics = lyrics,
                 canToggle = (actions and (PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE)) != 0L,
                 canPrevious = (actions and PlaybackState.ACTION_SKIP_TO_PREVIOUS) != 0L,
                 canNext = (actions and PlaybackState.ACTION_SKIP_TO_NEXT) != 0L,
