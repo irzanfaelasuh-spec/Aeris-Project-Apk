@@ -12,7 +12,7 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import java.util.LinkedHashMap
 
- data class NotificationSnapshot(
+data class NotificationSnapshot(
     val title: String,
     val text: String,
     val packageName: String,
@@ -51,12 +51,20 @@ object NotificationStore {
         val text = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
             ?.takeIf { it.isNotBlank() }
             ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
-        val action = notification.actions?.firstOrNull { candidate ->
-            candidate.actionIntent != null && candidate.remoteInputs?.any { it.allowFreeFormInput } == true
-        }
+        // Quick reply is intentionally limited to WhatsApp and WhatsApp Business.
+        // Other apps can still appear in notification history, but their actions
+        // are never exposed through AERIS's reply UI.
+        val isWhatsApp = isWhatsAppPackage(sbn.packageName)
+        val action = if (isWhatsApp) {
+            notification.actions?.firstOrNull { candidate ->
+                candidate.actionIntent != null &&
+                    candidate.remoteInputs?.any { it.allowFreeFormInput } == true
+            }
+        } else null
         val intent = action?.actionIntent
         val remoteInputs = action?.remoteInputs?.filter { it.allowFreeFormInput }.orEmpty()
-        if (intent != null && remoteInputs.isNotEmpty()) {
+        val canReply = isWhatsApp && intent != null && remoteInputs.isNotEmpty()
+        if (canReply && intent != null) {
             replyTargets[sbn.key] = ReplyTarget(intent, remoteInputs.toTypedArray())
         } else {
             replyTargets.remove(sbn.key)
@@ -69,7 +77,7 @@ object NotificationStore {
             packageName = sbn.packageName,
             receivedAt = sbn.postTime,
             key = sbn.key,
-            canReply = intent != null && remoteInputs.isNotEmpty()
+            canReply = canReply
         )
         while (queue.size > MAX_RECENT) {
             val first = queue.entries.firstOrNull()?.key ?: break
@@ -80,8 +88,18 @@ object NotificationStore {
     }
 
     @Synchronized
+    fun remove(key: String) {
+        queue.remove(key)
+        replyTargets.remove(key)
+        latest = queue.values.lastOrNull()
+    }
+
+    @Synchronized
     fun sendReply(context: Context, message: String, notificationKey: String? = latest?.key): Boolean {
-        val target = notificationKey?.let { replyTargets[it] } ?: return false
+        val key = notificationKey ?: return false
+        val notification = queue[key] ?: return false
+        if (!notification.canReply || !isWhatsAppPackage(notification.packageName)) return false
+        val target = replyTargets[key] ?: return false
         if (message.isBlank()) return false
         return try {
             val fillIn = Intent()
@@ -97,6 +115,9 @@ object NotificationStore {
             false
         }
     }
+
+    private fun isWhatsAppPackage(packageName: String): Boolean =
+        packageName == "com.whatsapp" || packageName == "com.whatsapp.w4b"
 }
 
 class AerisNotificationListener : NotificationListenerService() {
@@ -120,8 +141,9 @@ class AerisNotificationListener : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        // Keep the in-memory snapshot so the user can still browse recent history.
-        // Reply may no longer work if Android cancels the source PendingIntent.
+        // Once Android removes a notification, it must also disappear from
+        // AERIS history so dismissed notifications do not remain on the Island.
+        NotificationStore.remove(sbn.key)
     }
 
     companion object {
@@ -131,6 +153,8 @@ class AerisNotificationListener : NotificationListenerService() {
             val listener = activeListener ?: return false
             return try {
                 listener.cancelNotification(key)
+                // Remove immediately; the Android removal callback may arrive later.
+                NotificationStore.remove(key)
                 true
             } catch (_: Exception) {
                 false
