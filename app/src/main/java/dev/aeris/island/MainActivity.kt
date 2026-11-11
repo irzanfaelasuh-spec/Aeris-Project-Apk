@@ -249,7 +249,7 @@ class MainActivity : Activity() {
                 val enabled = if (title.startsWith("Display")) Settings.canDrawOverlays(this@MainActivity) else AerisNotificationListener.isEnabled(this@MainActivity)
                 addView(text(if (enabled) "ENABLED" else "NEEDS ACCESS", 8f, if (enabled) 0xFF7DD6B0.toInt() else 0xFFE9B86B.toInt(), true))
             }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(TextView(this).apply {
+            addView(TextView(this@MainActivity).apply {
                 text = "OPEN"; textSize = 9f; setTextColor(0xFFC9B8F4.toInt()); setPadding(dp(8), dp(8), dp(4), dp(8)); setOnClickListener { action() }
             })
         })
