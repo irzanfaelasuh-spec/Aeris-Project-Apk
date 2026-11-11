@@ -12,8 +12,8 @@ class LyricsEngineTest {
         val lines = LyricsEngine.parse("[00:01.20]first line\n[00:03.40]second line")
         assertEquals(2, lines.size)
         assertEquals(1200L, lines[0].startMs)
-        assertEquals("first line", lines[0].text)
-        assertEquals(0, lines[0].words.size)
+        assertEquals("first line", lines[0].plainText)
+        assertFalse(lines[0].words.isNotEmpty())
     }
 
     @Test
@@ -28,7 +28,7 @@ class LyricsEngineTest {
         assertNotNull(frame)
         assertEquals("first second", frame!!.current)
         assertEquals(1, frame.activeWordIndex)
-        assertTrue(frame.activeWordIndex >= 0)
+        assertTrue(frame.wordSynced)
     }
 
     @Test
@@ -39,6 +39,6 @@ class LyricsEngineTest {
         assertEquals("beta", frame!!.current)
         assertEquals("alpha", frame.previous)
         assertEquals("gamma", frame.next)
-        assertFalse(frame.words.isNotEmpty())
+        assertFalse(frame.wordSynced)
     }
 }
