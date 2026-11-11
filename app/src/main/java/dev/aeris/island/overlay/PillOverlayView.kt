@@ -93,17 +93,17 @@ class PillOverlayView(context: Context, private val callbacks: Callbacks) : Line
 
         header.orientation = HORIZONTAL
         header.gravity = Gravity.CENTER_VERTICAL
-        header.layoutParams = LayoutParams(MATCH_PARENT, dp(38))
+        header.layoutParams = LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38))
 
         artwork.scaleType = ImageView.ScaleType.CENTER_CROP
         artwork.layoutParams = LayoutParams(dp(30), dp(30)).apply { marginEnd = dp(10) }
-        artwork.background = roundedBackground(0xFF2D313B, 100f)
+        artwork.background = roundedBackground(0xFF2D313B.toInt(), 100f)
         artwork.clipToOutline = true
         header.addView(artwork)
 
         labels.orientation = VERTICAL
         labels.gravity = Gravity.CENTER_VERTICAL
-        labels.layoutParams = LayoutParams(0, MATCH_PARENT, 1f)
+        labels.layoutParams = LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
         title.textSize = 12f
         title.setTextColor(Color.WHITE)
         title.typeface = android.graphics.Typeface.create("sans-serif-medium", 0)
@@ -146,10 +146,10 @@ class PillOverlayView(context: Context, private val callbacks: Callbacks) : Line
         currentLyric.maxLines = 3
         nextLyric.gravity = Gravity.CENTER
         noLyrics.gravity = Gravity.CENTER
-        lyricsBox.addView(previousLyric, LayoutParams(MATCH_PARENT, dp(22)))
-        lyricsBox.addView(currentLyric, LayoutParams(MATCH_PARENT, dp(62)))
-        lyricsBox.addView(nextLyric, LayoutParams(MATCH_PARENT, dp(22)))
-        lyricsBox.addView(noLyrics, LayoutParams(MATCH_PARENT, dp(54)))
+        lyricsBox.addView(previousLyric, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(22)))
+        lyricsBox.addView(currentLyric, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(62)))
+        lyricsBox.addView(nextLyric, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(22)))
+        lyricsBox.addView(noLyrics, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)))
         lyricsBox.visibility = GONE
         addView(lyricsBox)
 
@@ -165,7 +165,7 @@ class PillOverlayView(context: Context, private val callbacks: Callbacks) : Line
         seek.progressTintList = android.content.res.ColorStateList.valueOf(0xFFF5F2F7.toInt())
         seek.thumbTintList = android.content.res.ColorStateList.valueOf(0xFFF5F2F7.toInt())
         seek.progressBackgroundTintList = android.content.res.ColorStateList.valueOf(0x667B7C85)
-        seek.layoutParams = LayoutParams(MATCH_PARENT, dp(24))
+        seek.layoutParams = LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(24))
         seek.visibility = GONE
         seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -183,7 +183,7 @@ class PillOverlayView(context: Context, private val callbacks: Callbacks) : Line
         actions.gravity = Gravity.CENTER
         actions.setPadding(dp(1), dp(6), dp(1), dp(4))
         actions.visibility = GONE
-        addView(actions, LayoutParams(MATCH_PARENT, dp(47)))
+        addView(actions, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(47)))
 
         notificationBody.textSize = 11f
         notificationBody.setTextColor(0xFFF1EEF5.toInt())
@@ -243,10 +243,10 @@ class PillOverlayView(context: Context, private val callbacks: Callbacks) : Line
         background = pillBackground(tint, if (expanded) 36 else 42)
         setPadding(dp(14), dp(if (expanded) 13 else 5), dp(14), dp(if (expanded) 12 else 5))
 
-        header.layoutParams = LayoutParams(MATCH_PARENT, dp(if (expanded) 62 else 38))
+        header.layoutParams = LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(if (expanded) 62 else 38))
         val artSize = dp(if (expanded) 58 else 30)
         artwork.layoutParams = LayoutParams(artSize, artSize).apply { marginEnd = dp(11) }
-        artwork.background = roundedBackground(0xFF2D313B, if (expanded) 15f else 100f)
+        artwork.background = roundedBackground(0xFF2D313B.toInt(), if (expanded) 15f else 100f)
         labels.visibility = if (active) VISIBLE else GONE
         title.text = when {
             media != null -> media.title
