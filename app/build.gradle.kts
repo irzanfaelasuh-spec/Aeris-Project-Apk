@@ -22,5 +22,6 @@ android {
 }
 
 dependencies {
+    implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("androidx.core:core-ktx:1.16.0")
 }
