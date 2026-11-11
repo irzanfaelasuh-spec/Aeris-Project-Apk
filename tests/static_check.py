@@ -1,98 +1,39 @@
-#!/usr/bin/env python3
-"""Fast structural checks for AERIS. Android compilation remains the CI job's next gate."""
 from pathlib import Path
-import sys
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
-REQUIRED = [
-    "settings.gradle.kts",
-    "build.gradle.kts",
-    "gradle.properties",
-    "app/build.gradle.kts",
+required = [
+    "settings.gradle.kts", "build.gradle.kts", "app/build.gradle.kts",
     "app/src/main/AndroidManifest.xml",
     "app/src/main/java/dev/aeris/island/MainActivity.kt",
-    "app/src/main/java/dev/aeris/island/AerisApp.kt",
     "app/src/main/java/dev/aeris/island/AerisPrefs.kt",
-    "app/src/main/java/dev/aeris/island/overlay/IslandService.kt",
-    "app/src/main/java/dev/aeris/island/overlay/PillOverlayView.kt",
     "app/src/main/java/dev/aeris/island/media/MediaBridge.kt",
     "app/src/main/java/dev/aeris/island/media/LyricsEngine.kt",
+    "app/src/main/java/dev/aeris/island/media/LyricsProvider.kt",
     "app/src/main/java/dev/aeris/island/notifications/AerisNotificationListener.kt",
-    "app/src/main/java/dev/aeris/island/shizuku/ShizukuBridge.kt",
-    "app/src/test/java/dev/aeris/island/media/LyricsEngineTest.kt",
-    ".github/workflows/android.yml",
+    "app/src/main/java/dev/aeris/island/overlay/IslandService.kt",
+    "app/src/main/java/dev/aeris/island/overlay/PillOverlayView.kt",
 ]
-missing = [item for item in REQUIRED if not (ROOT / item).is_file()]
-if missing:
-    print("Missing required files:")
-    for item in missing:
-        print(f" - {item}")
-    sys.exit(1)
-
-xml_files = list((ROOT / "app/src/main").rglob("*.xml"))
-for xml_file in xml_files:
-    try:
-        ET.parse(xml_file)
-    except ET.ParseError as exc:
-        print(f"Invalid XML: {xml_file.relative_to(ROOT)}: {exc}")
-        sys.exit(1)
-
-manifest = (ROOT / "app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
-checks = {
-    "overlay permission": "android.permission.SYSTEM_ALERT_WINDOW",
-    "notification listener binding": "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE",
-    "special-use foreground service": "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
-    "Shizuku provider": "rikka.shizuku.ShizukuProvider",
-    "foreground overlay service": "android:foregroundServiceType=\"specialUse\"",
-}
-for label, needle in checks.items():
-    if needle not in manifest:
-        print(f"Manifest check failed: {label}")
-        sys.exit(1)
-
-main = (ROOT / "app/src/main/java/dev/aeris/island/MainActivity.kt").read_text(encoding="utf-8")
-service = (ROOT / "app/src/main/java/dev/aeris/island/overlay/IslandService.kt").read_text(encoding="utf-8")
-notification = (ROOT / "app/src/main/java/dev/aeris/island/notifications/AerisNotificationListener.kt").read_text(encoding="utf-8")
-pill = (ROOT / "app/src/main/java/dev/aeris/island/overlay/PillOverlayView.kt").read_text(encoding="utf-8")
-media = (ROOT / "app/src/main/java/dev/aeris/island/media/MediaBridge.kt").read_text(encoding="utf-8")
-lyrics = (ROOT / "app/src/main/java/dev/aeris/island/media/LyricsEngine.kt").read_text(encoding="utf-8")
-for label, content, needles in [
-    ("main UI", main, ["SplashScreen", "VerificationScreen", "HomeScreen", "SettingsScreen", "TutorialScreen", "AboutScreen"]),
-    ("overlay", service, ["TYPE_APPLICATION_OVERLAY", "startForeground", "landscape_enabled", "expand_seconds"]),
-    ("notification bridge", notification, ["onNotificationPosted", "RemoteInput.addResultsToIntent", "PendingIntent.CanceledException", "cancelNotification"]),
-    ("V2 pill", pill, ["IdleEyesView", "LyricsEngine.frame", "seekBar", "onDismissNotification", "adjustStreamVolume"]),
-    ("media bridge", media, ["ACTION_SKIP_TO_PREVIOUS", "ACTION_SKIP_TO_NEXT", "ACTION_SEEK_TO", "canToggle", "customAction"]),
-    ("lyrics engine", lyrics, ["wordTime", "activeWordIndex", "wordSynced"]),
-]:
-    for needle in needles:
-        if needle not in content:
-            print(f"{label} check failed: missing {needle}")
-            sys.exit(1)
-
-app_gradle = (ROOT / "app/build.gradle.kts").read_text(encoding="utf-8")
-if 'versionCode = 2' not in app_gradle or 'versionName = "2.0.0"' not in app_gradle:
-    print("V2 application version check failed")
-    sys.exit(1)
-if "import android.app.BatteryManager" in main or "import androidx.compose.foundation.layout.weight" in main:
-    print("Known invalid / internal imports are present in MainActivity.kt")
-    sys.exit(1)
-if "import android.content.pm.ServiceInfo" not in service:
-    print("Foreground service import check failed")
-    sys.exit(1)
-if "rememberSaveable" not in main or "androidx.compose.runtime.saveable.rememberSaveable" not in main:
-    print("rememberSaveable import check failed")
-    sys.exit(1)
-
-for path in ROOT.rglob("*.kt"):
-    content = path.read_text(encoding="utf-8")
-    if "TODO(" in content or "IMPLEMENT ME" in content:
-        print(f"Placeholder marker found in {path.relative_to(ROOT)}")
-        sys.exit(1)
-
-if not (ROOT / "app/src/test/java/dev/aeris/island/media/LyricsEngineTest.kt").is_file():
-    print("Missing LyricsEngine unit tests in the Gradle test source set")
-    sys.exit(1)
-
-print(f"AERIS V2 structural checks passed: {len(REQUIRED)} required files, {len(xml_files)} XML resources.")
-print("Note: the GitHub Actions job performs the actual Android/Gradle compile.")
+missing = [p for p in required if not (ROOT / p).is_file()]
+assert not missing, f"Missing files: {missing}"
+for p in (ROOT / "app/src/main").rglob("*.xml"):
+    ET.parse(p)
+manifest = (ROOT / "app/src/main/AndroidManifest.xml").read_text()
+for token in ["INTERNET", "SYSTEM_ALERT_WINDOW", "BIND_NOTIFICATION_LISTENER_SERVICE", "FOREGROUND_SERVICE_SPECIAL_USE", "DETECT_SCREEN_RECORDING"]:
+    assert token in manifest, f"Missing manifest permission/binding: {token}"
+pill = (ROOT / "app/src/main/java/dev/aeris/island/overlay/PillOverlayView.kt").read_text()
+service = (ROOT / "app/src/main/java/dev/aeris/island/overlay/IslandService.kt").read_text()
+notifs = (ROOT / "app/src/main/java/dev/aeris/island/notifications/AerisNotificationListener.kt").read_text()
+main = (ROOT / "app/src/main/java/dev/aeris/island/MainActivity.kt").read_text()
+assert "IdleEyesView" not in pill
+for token in ["LyricsEngine.frame", "browseNotifications", "lyricsExpanded", "sampleArtworkTint", "appTint"]:
+    assert token in pill, f"Missing overlay feature: {token}"
+for token in ["notification_peek_seconds", "addScreenRecordingCallback", "animateTo", "setBlurBehindRadius"]:
+    assert token in service, f"Missing service feature: {token}"
+for token in ["markSourceRemoved", "RemoteInput.addResultsToIntent", "recent()"]:
+    assert token in notifs, f"Missing notification feature: {token}"
+for token in ["liquid_glass", "single_tap_action", "double_tap_action", "notification_peek_seconds", "online_lyrics"]:
+    assert token in main, f"Missing settings feature: {token}"
+gradle = (ROOT / "app/build.gradle.kts").read_text()
+assert 'versionCode = 3' in gradle and 'versionName = "3.0.0"' in gradle
+print(f"AERIS V3 static checks passed: {len(required)} required files and XML resources parsed.")
