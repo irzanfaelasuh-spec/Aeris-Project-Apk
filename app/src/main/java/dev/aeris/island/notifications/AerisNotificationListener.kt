@@ -1,3 +1,4 @@
+
 package dev.aeris.island.notifications
 
 import android.app.Notification
@@ -37,7 +38,8 @@ object NotificationStore {
         private set
 
     @Synchronized
-    fun recent(): List<NotificationSnapshot> = queue.values.toList().asReversed()
+    fun recent(): List<NotificationSnapshot> =
+        queue.values.toList().asReversed()
 
     @Synchronized
     fun count(): Int = queue.size
@@ -45,45 +47,67 @@ object NotificationStore {
     @Synchronized
     fun accept(sbn: StatusBarNotification, ownPackage: String) {
         if (sbn.packageName == ownPackage) return
+
         val notification = sbn.notification ?: return
         val extras = notification.extras ?: Bundle.EMPTY
-        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
-        val text = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+
+        val title = extras
+            .getCharSequence(Notification.EXTRA_TITLE)
+            ?.toString().orEmpty()
+
+        val text = extras
+            .getCharSequence(Notification.EXTRA_BIG_TEXT)
+            ?.toString()
             ?.takeIf { it.isNotBlank() }
-            ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+            ?: extras.getCharSequence(Notification.EXTRA_TEXT)
+                ?.toString().orEmpty()
+
         // Quick reply is intentionally limited to WhatsApp and WhatsApp Business.
-        // Other apps can still appear in notification history, but their actions
-        // are never exposed through AERIS's reply UI.
+        // Other apps can still appear in notification history.
         val isWhatsApp = isWhatsAppPackage(sbn.packageName)
+
         val action = if (isWhatsApp) {
             notification.actions?.firstOrNull { candidate ->
                 candidate.actionIntent != null &&
-                    candidate.remoteInputs?.any { it.allowFreeFormInput } == true
+                    candidate.remoteInputs?.any {
+                        it.allowFreeFormInput
+                    } == true
             }
         } else null
+
         val intent = action?.actionIntent
-        val remoteInputs = action?.remoteInputs?.filter { it.allowFreeFormInput }.orEmpty()
-        val canReply = isWhatsApp && intent != null && remoteInputs.isNotEmpty()
+        val remoteInputs = action?.remoteInputs
+            ?.filter { it.allowFreeFormInput }
+            .orEmpty()
+
+        val canReply =
+            isWhatsApp && intent != null && remoteInputs.isNotEmpty()
+
         if (canReply && intent != null) {
-            replyTargets[sbn.key] = ReplyTarget(intent, remoteInputs.toTypedArray())
+            replyTargets[sbn.key] =
+                ReplyTarget(intent, remoteInputs.toTypedArray())
         } else {
             replyTargets.remove(sbn.key)
         }
 
-        queue.remove(sbn.key) // Re-posting a notification moves it to the newest position.
+        queue.remove(sbn.key)
         queue[sbn.key] = NotificationSnapshot(
-            title = title.ifBlank { sbn.packageName.substringAfterLast('.') },
+            title = title.ifBlank {
+                sbn.packageName.substringAfterLast('.')
+            },
             text = text,
             packageName = sbn.packageName,
             receivedAt = sbn.postTime,
             key = sbn.key,
             canReply = canReply
         )
+
         while (queue.size > MAX_RECENT) {
             val first = queue.entries.firstOrNull()?.key ?: break
             queue.remove(first)
             replyTargets.remove(first)
         }
+
         latest = queue.values.lastOrNull()
     }
 
@@ -95,18 +119,35 @@ object NotificationStore {
     }
 
     @Synchronized
-    fun sendReply(context: Context, message: String, notificationKey: String? = latest?.key): Boolean {
+    fun sendReply(
+        context: Context,
+        message: String,
+        notificationKey: String? = latest?.key
+    ): Boolean {
         val key = notificationKey ?: return false
         val notification = queue[key] ?: return false
-        if (!notification.canReply || !isWhatsAppPackage(notification.packageName)) return false
+
+        if (!notification.canReply ||
+            !isWhatsAppPackage(notification.packageName)
+        ) return false
+
         val target = replyTargets[key] ?: return false
         if (message.isBlank()) return false
+
         return try {
             val fillIn = Intent()
             val results = Bundle().apply {
-                target.remoteInputs.forEach { input -> putCharSequence(input.resultKey, message) }
+                target.remoteInputs.forEach { input ->
+                    putCharSequence(input.resultKey, message)
+                }
             }
-            RemoteInput.addResultsToIntent(target.remoteInputs, fillIn, results)
+
+            RemoteInput.addResultsToIntent(
+                target.remoteInputs,
+                fillIn,
+                results
+            )
+
             target.pendingIntent.send(context, 0, fillIn)
             true
         } catch (_: PendingIntent.CanceledException) {
@@ -117,22 +158,28 @@ object NotificationStore {
     }
 
     private fun isWhatsAppPackage(packageName: String): Boolean =
-        packageName == "com.whatsapp" || packageName == "com.whatsapp.w4b"
+        packageName == "com.whatsapp" ||
+            packageName == "com.whatsapp.w4b"
 }
 
 class AerisNotificationListener : NotificationListenerService() {
+
     override fun onListenerConnected() {
         super.onListenerConnected()
         activeListener = this
     }
 
     override fun onListenerDisconnected() {
-        if (activeListener === this) activeListener = null
+        if (activeListener === this) {
+            activeListener = null
+        }
         super.onListenerDisconnected()
     }
 
     override fun onDestroy() {
-        if (activeListener === this) activeListener = null
+        if (activeListener === this) {
+            activeListener = null
+        }
         super.onDestroy()
     }
 
@@ -141,20 +188,21 @@ class AerisNotificationListener : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        // Once Android removes a notification, it must also disappear from
-        // AERIS history so dismissed notifications do not remain on the Island.
-        NotificationStore.remove(sbn.key)
+        // Keep the in-memory snapshot for notification history browsing.
+        // Removing a notification from Android's shade must not erase AERIS history.
+        // Its reply action may no longer be valid after Android dismisses it.
     }
 
     companion object {
-        @Volatile private var activeListener: AerisNotificationListener? = null
+        @Volatile
+        private var activeListener: AerisNotificationListener? = null
 
         fun dismissNotification(key: String): Boolean {
             val listener = activeListener ?: return false
+
             return try {
                 listener.cancelNotification(key)
-                // Remove immediately; the Android removal callback may arrive later.
-                NotificationStore.remove(key)
+                // Keep the in-memory snapshot for notification history.
                 true
             } catch (_: Exception) {
                 false
@@ -166,8 +214,15 @@ class AerisNotificationListener : NotificationListenerService() {
                 context.contentResolver,
                 "enabled_notification_listeners"
             ) ?: return false
-            val expected = ComponentName(context, AerisNotificationListener::class.java)
-            return enabled.split(':').any { ComponentName.unflattenFromString(it) == expected }
+
+            val expected = ComponentName(
+                context,
+                AerisNotificationListener::class.java
+            )
+
+            return enabled.split(':').any {
+                ComponentName.unflattenFromString(it) == expected
+            }
         }
     }
 }
